@@ -1,4 +1,4 @@
-cd era5_land_ca_t2m/
+cd era5_france_raw/
 
 for file in *.nc; do
     # Verify if the file is actually a ZIP archive to prevent corrupting valid NetCDFs
