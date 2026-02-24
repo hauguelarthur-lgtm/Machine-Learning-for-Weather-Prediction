@@ -1,0 +1,22 @@
+meteo_deep_learning/
+├── 01_data_extraction/
+│   ├── cds_api_surface.py         # The month-by-month surface API loop
+│   ├── cds_api_pressure.py        # The month-by-month pressure API loop
+│   └── unzip_multiples.sh         # The POSIX-compliant extraction script
+│
+├── 02_data_engineering/
+│   ├── 01_merge_and_clean.py      # The xarray sanitization script (current step)
+│   ├── 02_feature_engineering.py  # Calculates vorticity, lapse rates, time embeddings
+│   ├── 03_compute_statistics.py   # Computes global global \mu and \sigma
+│   └── 04_serialize_tensors.py    # Normalizes and saves to 5-year .npy blocks
+│
+├── 03_pytorch_pipeline/           # THIS directory goes to the Cloud GPU
+│   ├── dataset.py                 # PyTorch Dataset class using numpy.memmap
+│   ├── architecture.py            # The mathematical definition of the ResUNet
+│   ├── loss_functions.py          # Custom loss (e.g., Latitude-Weighted MSE)
+│   ├── train_hyperparameters.py   # The Optuna search loop (Phase A)
+│   └── train_convergence.py       # The final 100-epoch training loop (Phase B)
+│
+└── data/
+    ├── raw/                       # The 720 NetCDF files
+    └── processed/                 # The six 6.34 GB .npy files + stats.json
