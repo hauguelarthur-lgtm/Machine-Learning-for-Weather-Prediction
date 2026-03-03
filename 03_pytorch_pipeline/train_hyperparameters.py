@@ -60,7 +60,7 @@ def objective(trial):
     scaler = torch.amp.GradScaler('cuda')
     
     # 5. Fast Evaluation Loop (3 Epochs per Trial)
-    epochs = 3 
+    epochs = 15 
     
     for epoch in range(epochs):
         model.train()
@@ -72,7 +72,7 @@ def objective(trial):
             # Forward pass in float16
             with torch.amp.autocast('cuda'):
                 predictions = model(x)
-                loss = criterion(predictions, y)
+            loss = criterion(predictions.float(), y.float())
                 
             # Backward pass with scaled gradients
             scaler.scale(loss).backward()
@@ -93,7 +93,7 @@ def objective(trial):
                 
                 with torch.amp.autocast('cuda'):
                     val_preds = model(x_val)
-                    batch_loss = criterion(val_preds, y_val)
+                batch_loss = criterion(val_preds.float(), y_val.float())
                 
                 val_loss += batch_loss.item()
                 
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     # The MedianPruner terminates unpromising trials early to save GPU time
     study = optuna.create_study(
         direction="minimize", 
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5)
     )
     
     # Execute 20 distinct trials

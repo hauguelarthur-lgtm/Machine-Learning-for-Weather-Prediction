@@ -69,7 +69,7 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
             
             with torch.amp.autocast('cuda'):
                 predictions = model(x)
-                loss = criterion(predictions, y)
+            loss = criterion(predictions.float(), y.float())
                 
             scaler.scale(loss).backward()
             
@@ -98,7 +98,7 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                     
                     # Calculate true WB2 RMSE across all 102 channels for the batch
                     # Returns tensor of shape (102,)
-                    batch_rmse = evaluator.compute_rmse(val_preds, y_val) 
+                batch_rmse = evaluator.compute_rmse(val_preds.float(), y_val.float()) 
                 
                 # We track the global mean RMSE across all channels for the scheduler
                 val_rmse_accum += torch.mean(batch_rmse).item()

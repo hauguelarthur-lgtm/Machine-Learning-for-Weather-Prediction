@@ -17,7 +17,7 @@ def execute_optimization_phase(result_queue):
     
     study = optuna.create_study(
         direction="minimize", 
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5)
     )
     study.optimize(objective, n_trials=20)
     
