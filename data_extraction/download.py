@@ -4,7 +4,7 @@ import os
 # Initialize the CDS client
 c = cdsapi.Client()
 
-YEARS = [str(year) for year in range(1990, 1995)]
+YEARS = [str(year) for year in range(1995, 1996)]
 MONTHS = [f"{month:02d}" for month in range(1, 13)]
 DAYS = [f"{day:02d}" for day in range(1, 32)]
 TIMES = ['00:00', '06:00', '12:00', '18:00']
