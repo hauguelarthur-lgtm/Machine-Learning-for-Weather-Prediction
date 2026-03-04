@@ -62,3 +62,13 @@ class WeatherBench2Metrics:
         
         # Returns a 1D tensor of length C
         return torch.mean(weighted_error, dim=(0, 2, 3))
+    
+    def compute_mse(self, predictions, targets):
+        """
+        Computes the area-weighted MSE per channel.
+        Returns a 1D tensor of length C without applying the square root.
+        """
+        sq_error = (predictions - targets) ** 2
+        weighted_sq_error = sq_error * self.weights
+        
+        return torch.mean(weighted_sq_error, dim=(0, 2, 3))
