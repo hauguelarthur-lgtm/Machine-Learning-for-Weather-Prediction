@@ -88,7 +88,7 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 predictions = model(x)
             
             # Scale the loss for backpropagation
@@ -125,7 +125,7 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                 y_val = y_val.to(device, non_blocking=True)
                 batch_size = x_val.size(0)
                 
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     val_preds = model(x_val)
                     
                 # Extract batch MSE per channel: shape (102,)

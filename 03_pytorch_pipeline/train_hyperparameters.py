@@ -64,7 +64,7 @@ def get_objective(train_subset, val_subset):
                 x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
             
                 # Forward pass in float16
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     predictions = model(x)
                 
                 # Mathematically scale the loss to compute the true mean over the effective batch
@@ -99,7 +99,7 @@ def get_objective(train_subset, val_subset):
                     # Extract the exact physical batch size (vital for the final remainder batch)
                     current_batch_size = x_val.size(0)
                 
-                    with torch.amp.autocast('cuda'):
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                         val_preds = model(x_val)
                         
                     # criterion() returns the mean scalar across the batch domain
