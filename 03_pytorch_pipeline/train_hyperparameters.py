@@ -50,54 +50,79 @@ def get_objective(train_subset, val_subset):
         # 5. Fast Evaluation Loop (3 Epochs per Trial)
         epochs = 15 
     
+        # Define the scalar to multiply your physical batch size
+        # If Optuna selects batch_size=32, effective batch size becomes 128
+        accumulation_steps = 4 
+    
         for epoch in range(epochs):
             model.train()
+            
+            # Initialize gradient matrix to zero strictly at the start of the epoch
+            optimizer.zero_grad(set_to_none=True)
+            
             for batch_idx, (x, y) in enumerate(train_loader):
                 x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
-            
-                optimizer.zero_grad(set_to_none=True)
             
                 # Forward pass in float16
                 with torch.amp.autocast('cuda'):
                     predictions = model(x)
-                loss = criterion(predictions.float(), y.float())
                 
-                # Backward pass with scaled gradients
+                # Mathematically scale the loss to compute the true mean over the effective batch
+                loss = criterion(predictions.float(), y.float()) / accumulation_steps
+                
+                # Accumulate the scaled gradients in the parameter .grad tensors
                 scaler.scale(loss).backward()
             
-                # Unscale gradients and apply L2 clipping to prevent explosion
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
-                scaler.step(optimizer)
-                scaler.update()
+                # Execute the hardware update strictly at the accumulation boundary or epoch end
+                if ((batch_idx + 1) % accumulation_steps == 0) or ((batch_idx + 1) == len(train_loader)):
+                    
+                    # Unscale gradients and apply L2 clipping
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                    # Step the optimizer and mixed precision scaler
+                    scaler.step(optimizer)
+                    scaler.update()
+                    
+                    # Flush the gradient matrix for the next accumulation cycle
+                    optimizer.zero_grad(set_to_none=True)
             
             # Validation Phase
             model.eval()
-            val_loss = 0.0
+            total_val_loss = 0.0
+            total_samples = 0
+            
             with torch.no_grad():
                 for x_val, y_val in val_loader:
                     x_val, y_val = x_val.to(device, non_blocking=True), y_val.to(device, non_blocking=True)
+                    
+                    # Extract the exact physical batch size (vital for the final remainder batch)
+                    current_batch_size = x_val.size(0)
                 
                     with torch.amp.autocast('cuda'):
                         val_preds = model(x_val)
+                        
+                    # criterion() returns the mean scalar across the batch domain
                     batch_loss = criterion(val_preds.float(), y_val.float())
                 
-                    val_loss += batch_loss.item()
+                    # Reconstruct the absolute sum of errors for this batch and accumulate
+                    total_val_loss += batch_loss.item() * current_batch_size
+                    total_samples += current_batch_size
                 
-            val_loss /= len(val_loader)
+            # Divide the absolute error sum by the exact global sample count
+            true_val_loss = total_val_loss / total_samples
         
-            # Report intermediate results to Optuna for algorithmic pruning
-            trial.report(val_loss, epoch)
+            # Report the mathematically rigorous scalar to the TPE algorithm
+            trial.report(true_val_loss, epoch)
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
             
-        return val_loss
+        return true_val_loss
     return objective
 
 if __name__ == "__main__":
     print("Initializing Bayesian Hyperparameter Optimization...")
-    
+
     full_dataset = MeteorologicalDataset(tensor_dir="/workspace/data/processed/tensors/", horizon=1)
     
     # Define exact temporal boundaries to prevent chronological leakage (See Fix #3)

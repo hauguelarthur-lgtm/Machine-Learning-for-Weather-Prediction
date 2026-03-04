@@ -54,32 +54,42 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     scaler = torch.amp.GradScaler('cuda')
     best_val_rmse = float('inf')
 
+    accumulation_steps = 4  # Enforce the same dynamic scalar
+    
     # 4. Global Convergence Loop
     for epoch in range(1, EPOCHS + 1):
         model.train()
         train_loss_accum = 0.0
+        
+        # Flush the gradients before the first batch of the epoch
+        optimizer.zero_grad(set_to_none=True)
         
         for batch_idx, (x, y) in enumerate(train_loader):
             # Asynchronous VRAM transfer
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             
-            optimizer.zero_grad(set_to_none=True)
-            
             with torch.amp.autocast('cuda'):
                 predictions = model(x)
-            loss = criterion(predictions.float(), y.float())
+            
+            # Scale the loss for backpropagation
+            loss = criterion(predictions.float(), y.float()) / accumulation_steps
                 
             scaler.scale(loss).backward()
             
-            # Unscale and constrain L2 gradient norm to 1.0 to prevent explosion
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # Boundary check: Update weights when the sub-batch queue is full
+            if ((batch_idx + 1) % accumulation_steps == 0) or ((batch_idx + 1) == len(train_loader)):
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                scaler.step(optimizer)
+                scaler.update()
+                
+                # Reset gradients for the next cycle
+                optimizer.zero_grad(set_to_none=True)
             
-            scaler.step(optimizer)
-            scaler.update()
-            
-            train_loss_accum += loss.item()
+            # Multiply the scaled loss back by accumulation_steps to record the true physical scalar
+            train_loss_accum += (loss.item() * accumulation_steps)
             
         avg_train_loss = train_loss_accum / len(train_loader)
         
@@ -120,7 +130,8 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
         # 6. Strict Checkpointing Logic
         if avg_val_rmse < best_val_rmse:
             best_val_rmse = avg_val_rmse
-            save_path = f"./models/checkpoints/resunet_best_epoch_{epoch}.pth"
+            # Define a static path to strictly overwrite the prior state
+            save_path = "./models/checkpoints/resunet_optimal.pth"
             
             checkpoint = {
                 'epoch': epoch,
