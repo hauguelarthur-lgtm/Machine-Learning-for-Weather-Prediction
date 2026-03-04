@@ -8,8 +8,12 @@ def sanitize_netcdf(ds):
     """
     ds.attrs.clear()
     
-    if 'expver' in ds.variables or 'expver' in ds.dims:
+    # 1. If expver expanded the tensor dimension (e.g., ERA5T near-real-time overlap)
+    if 'expver' in ds.dims:
         ds = ds.isel(expver=0, drop=True)
+    # 2. If expver is merely a 0D scalar coordinate artifact in the header
+    elif 'expver' in ds.variables or 'expver' in ds.coords:
+        ds = ds.drop_vars('expver')
         
     return ds
 
