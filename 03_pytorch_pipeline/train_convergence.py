@@ -70,7 +70,6 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     evaluator = WeatherBench2Metrics(latitudes=lats)
     evaluator.to(device)
     
-    scaler = torch.amp.GradScaler('cuda')
     best_val_rmse = float('inf')
 
     accumulation_steps = 4  # Enforce the same dynamic scalar
@@ -91,18 +90,18 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 predictions = model(x)
             
-            # Scale the loss for backpropagation
+            # Scale the loss strictly for physical accumulation, not precision preservation
             loss = criterion(predictions.float(), y.float()) / accumulation_steps
                 
-            scaler.scale(loss).backward()
+            # Direct mathematical backpropagation
+            loss.backward()
             
             # Boundary check: Update weights when the sub-batch queue is full
             if ((batch_idx + 1) % accumulation_steps == 0) or ((batch_idx + 1) == len(train_loader)):
-                scaler.unscale_(optimizer)
+                # L2 Clipping applied directly to the native, unscaled bfloat16 gradients
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 
                 # Reset gradients for the next cycle
                 optimizer.zero_grad(set_to_none=True)
@@ -147,19 +146,18 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
         print(f"Epoch [{epoch:03d}/{EPOCHS}] | Train Loss: {avg_train_loss:.4e} | Val Mean RMSE: {avg_val_rmse:.4f}")
         
         # 6. Strict Checkpointing Logic
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'val_rmse': avg_val_rmse
+        }
+        torch.save(checkpoint, "./models/checkpoints/resunet_latest.pth")
+
         if avg_val_rmse < best_val_rmse:
             best_val_rmse = avg_val_rmse
-            # Define a static path to strictly overwrite the prior state
-            save_path = "./models/checkpoints/resunet_optimal.pth"
-            
-            checkpoint = {
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'val_rmse': best_val_rmse
-            }
-            torch.save(checkpoint, save_path)
+            torch.save(checkpoint, "./models/checkpoints/resunet_optimal.pth")
             print(f"  -> Physical state improved. Checkpoint serialized to SSD.")
 
 if __name__ == "__main__":

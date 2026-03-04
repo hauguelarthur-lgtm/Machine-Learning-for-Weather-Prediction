@@ -44,8 +44,6 @@ def get_objective(train_subset, val_subset):
         val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, 
                             num_workers=4, pin_memory=True)
     
-        # 4. Mixed Precision Scaler
-        scaler = torch.amp.GradScaler('cuda')
     
         # 5. Fast Evaluation Loop (3 Epochs per Trial)
         epochs = 15 
@@ -70,19 +68,15 @@ def get_objective(train_subset, val_subset):
                 # Mathematically scale the loss to compute the true mean over the effective batch
                 loss = criterion(predictions.float(), y.float()) / accumulation_steps
                 
-                # Accumulate the scaled gradients in the parameter .grad tensors
-                scaler.scale(loss).backward()
+                # Accumulate the native gradients
+                loss.backward()
             
                 # Execute the hardware update strictly at the accumulation boundary or epoch end
                 if ((batch_idx + 1) % accumulation_steps == 0) or ((batch_idx + 1) == len(train_loader)):
                     
-                    # Unscale gradients and apply L2 clipping
-                    scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
-                    # Step the optimizer and mixed precision scaler
-                    scaler.step(optimizer)
-                    scaler.update()
+                    optimizer.step()
                     
                     # Flush the gradient matrix for the next accumulation cycle
                     optimizer.zero_grad(set_to_none=True)

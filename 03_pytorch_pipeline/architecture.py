@@ -9,12 +9,12 @@ class ResidualBlock(nn.Module):
         """
         super().__init__()
         
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.GroupNorm(num_groups=1, num_channels=out_channels)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, padding_mode='replicate', bias=False)
+        self.bn1 = nn.InstanceNorm2d(out_channels, affine=True)
         self.act = nn.SiLU(inplace=True)
         
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.GroupNorm(num_groups=1, num_channels=out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, padding_mode='replicate',bias=False)
+        self.bn2 = nn.InstanceNorm2d(out_channels, affine=True)
         
         # Identity mapping alignment
         if in_channels != out_channels:
