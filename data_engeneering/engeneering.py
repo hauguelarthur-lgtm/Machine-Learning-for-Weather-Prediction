@@ -71,8 +71,12 @@ def engineer_physical_features(ds_surf, ds_pres):
     # 11-13. ENVIRONMENTAL LAPSE RATES
     # ---------------------------------------------------------
     # Low-level lapse rate strictly anchored to geometric topology, resolving subterranean clamping
-    ds_eng['lapse_low'] = -(ds_pres['t'].sel(pressure_level=850) - ds_surf['t2m']) / \
-                           (z_850 - geometric_elevation + EPSILON)
+    dz_low = z_850 - geometric_elevation
+    # Boolean mask: False (0) where 850hPa is subterranean
+    valid_mask = (dz_low > 0).astype(np.float32) 
+    
+    ds_eng['lapse_low'] = (-(ds_pres['t'].sel(pressure_level=850) - ds_surf['t2m']) / 
+                           (dz_low.clip(min=EPSILON))) * valid_mask
     
     ds_eng['lapse_mid'] = -(ds_pres['t'].sel(pressure_level=500) - ds_pres['t'].sel(pressure_level=850)) / \
                            (z_500 - z_850 + EPSILON)
@@ -129,7 +133,7 @@ def engineer_physical_features(ds_surf, ds_pres):
     # Constant scalar isolating standard gravity and converting hPa coordinates to Pascal
     mass_scalar = 100.0 / G_0 
     
-    ds_eng['col_q'] = ds_pres['q'].integrate(coord='pressure_level') * mass_scalar
+    ds_eng['col_q'] = np.abs(ds_pres['q'].integrate(coord='pressure_level') * mass_scalar)
     ds_eng['col_clwc'] = ds_pres['clwc'].integrate(coord='pressure_level') * mass_scalar
     ds_eng['col_ciwc'] = ds_pres['ciwc'].integrate(coord='pressure_level') * mass_scalar
     

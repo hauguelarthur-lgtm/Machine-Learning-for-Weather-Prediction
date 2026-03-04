@@ -8,8 +8,8 @@ def sanitize_netcdf(ds):
     """
     ds.attrs.clear()
     
-    if 'expver' in ds.variables:
-        ds = ds.drop_vars('expver')
+    if 'expver' in ds.variables or 'expver' in ds.dims:
+        ds = ds.isel(expver=0, drop=True)
         
     return ds
 

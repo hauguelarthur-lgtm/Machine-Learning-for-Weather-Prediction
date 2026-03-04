@@ -43,7 +43,8 @@ def process_features():
             pres_files, combine='by_coords', 
             preprocess=sanitize_netcdf, chunks={'valid_time': 'auto'}
         )
-        
+
+        ds_surf, ds_pres = xr.align(ds_surf, ds_pres, join='exact')
         print("  -> Engineering physical feature graphs...")
         ds_eng = engineer_physical_features(ds_surf, ds_pres)
         
