@@ -13,7 +13,19 @@ def engineer_physical_features(ds_surf, ds_pres):
     EPSILON = 1e-6  # Prevents division-by-zero errors in denominators
     L_V = 2.5e6     # Latent heat of vaporization (J/kg)
     C_P = 1004.0    # Specific heat of air at constant pressure (J/(kg K))
-    
+    G_0 = 9.80665   # Standard gravitational acceleration (m/s^2)
+    R_D = 287.058   # Specific gas constant for dry air (J/(kg K))
+    P_0 = 1000.0    # Standard reference pressure (hPa)
+    P_850 = 850.0   # Target pressure level (hPa)
+    R_EARTH = 6371000.0 # Mean radius of the Earth (m)
+
+    # --- Spherical Derivative Scalars ---
+    # Compute the dynamic longitudinal and static latitudinal step scalars.
+    # dx contracts toward the poles; dy is structurally constant.
+    lat_rad = np.deg2rad(ds_surf['latitude'])
+    dx_scalar = 1.0 / (R_EARTH * np.cos(lat_rad) * np.pi / 180.0)
+    dy_scalar = 1.0 / (R_EARTH * np.pi / 180.0)
+
     # 1-3. Wind Speeds (Magnitudes)
     ds_eng['v10_mag'] = np.sqrt(ds_surf['u10']**2 + ds_surf['v10']**2)
     ds_eng['v850_mag'] = np.sqrt(ds_pres['u'].sel(pressure_level=850)**2 + ds_pres['v'].sel(pressure_level=850)**2)
@@ -23,8 +35,9 @@ def engineer_physical_features(ds_surf, ds_pres):
     for lvl in [850, 500, 250]:
         u = ds_pres['u'].sel(pressure_level=lvl)
         v = ds_pres['v'].sel(pressure_level=lvl)
-        dv_dx = v.differentiate('longitude')
-        du_dy = u.differentiate('latitude')
+
+        dv_dx = v.differentiate('longitude') * dx_scalar
+        du_dy = u.differentiate('latitude') * dy_scalar
         ds_eng[f'vort_{lvl}'] = dv_dx - du_dy
         
     # 7-10. Vertical Wind Shear
@@ -34,40 +47,53 @@ def engineer_physical_features(ds_surf, ds_pres):
     ds_eng['shear_v_low'] = ds_pres['v'].sel(pressure_level=850) - ds_surf['v10']
 
     # 11-13. Lapse Rates (Negative vertical temperature gradient)
+    z_1000 = ds_pres['z'].sel(pressure_level=1000) / G_0
+    z_850  = ds_pres['z'].sel(pressure_level=850) / G_0
+    z_500  = ds_pres['z'].sel(pressure_level=500) / G_0
+    z_250  = ds_pres['z'].sel(pressure_level=250) / G_0
+
     ds_eng['lapse_low'] = -(ds_pres['t'].sel(pressure_level=850) - ds_pres['t'].sel(pressure_level=1000)) / \
-                           (ds_pres['z'].sel(pressure_level=850) - ds_pres['z'].sel(pressure_level=1000) + EPSILON)
-    ds_eng['lapse_mid'] = -(ds_pres['t'].sel(pressure_level=500) - ds_pres['t'].sel(pressure_level=850)) / \
-                           (ds_pres['z'].sel(pressure_level=500) - ds_pres['z'].sel(pressure_level=850) + EPSILON)
-    ds_eng['lapse_high'] = -(ds_pres['t'].sel(pressure_level=250) - ds_pres['t'].sel(pressure_level=500)) / \
-                            (ds_pres['z'].sel(pressure_level=250) - ds_pres['z'].sel(pressure_level=500) + EPSILON)
+                           (z_850 - z_1000 + EPSILON)
     
-    # 14-15. Geopotential Thickness
-    ds_eng['thick_1000_500'] = ds_pres['z'].sel(pressure_level=500) - ds_pres['z'].sel(pressure_level=1000)
-    ds_eng['thick_850_500'] = ds_pres['z'].sel(pressure_level=500) - ds_pres['z'].sel(pressure_level=850)
+    ds_eng['lapse_mid'] = -(ds_pres['t'].sel(pressure_level=500) - ds_pres['t'].sel(pressure_level=850)) / \
+                           (z_500 - z_850 + EPSILON)
+    
+    ds_eng['lapse_high'] = -(ds_pres['t'].sel(pressure_level=250) - ds_pres['t'].sel(pressure_level=500)) / \
+                            (z_250 - z_500 + EPSILON)
+    
+    # 14-15. Geopotential Thickness (in physical meters)
+    ds_eng['thick_1000_500'] = z_500 - z_1000
+    ds_eng['thick_850_500']  = z_500 - z_850
     
     # 16-18. Thermodynamic Indexes
     ds_eng['inv_strength'] = ds_pres['t'].sel(pressure_level=850) - ds_surf['t2m']
-    ds_eng['theta_e_850'] = ds_pres['t'].sel(pressure_level=850) + (L_V / C_P) * ds_pres['q'].sel(pressure_level=850)
+
+    t_850 = ds_pres['t'].sel(pressure_level=850)
+    q_850 = ds_pres['q'].sel(pressure_level=850)
+    
+    # 1. Calculate adiabatic Potential Temperature (theta)
+    theta_850 = t_850 * (P_0 / P_850) ** (R_D / C_P)
+    
+    # 2. Apply the exponential thermodynamic transformation
+    ds_eng['theta_e_850'] = theta_850 * np.exp((L_V * q_850) / (C_P * t_850))
     
     shear_500_10_sq = (ds_pres['u'].sel(pressure_level=500) - ds_surf['u10'])**2 + \
                       (ds_pres['v'].sel(pressure_level=500) - ds_surf['v10'])**2
     ds_eng['brn_proxy'] = ds_surf['cape'] / (0.5 * shear_500_10_sq + EPSILON)
 
     # 19-21. Topographical Forcings
-    ds_eng['slope_x'] = ds_surf['z'].differentiate('longitude')
-    ds_eng['slope_y'] = ds_surf['z'].differentiate('latitude')
+    ds_eng['slope_x'] = ds_surf['z'].differentiate('longitude') * dx_scalar
+    ds_eng['slope_y'] = ds_surf['z'].differentiate('latitude') * dy_scalar
     ds_eng['orographic_lift'] = (ds_surf['u10'] * ds_eng['slope_x']) + (ds_surf['v10'] * ds_eng['slope_y'])
     
     # 22-25. Advection and Pressure Gradients
-    t_850 = ds_pres['t'].sel(pressure_level=850)
-    q_850 = ds_pres['q'].sel(pressure_level=850)
-    ds_eng['adv_t_850'] = -(ds_pres['u'].sel(pressure_level=850) * t_850.differentiate('longitude') + 
-                            ds_pres['v'].sel(pressure_level=850) * t_850.differentiate('latitude'))
-    ds_eng['adv_q_850'] = -(ds_pres['u'].sel(pressure_level=850) * q_850.differentiate('longitude') + 
-                            ds_pres['v'].sel(pressure_level=850) * q_850.differentiate('latitude'))
+    ds_eng['adv_t_850'] = -(ds_pres['u'].sel(pressure_level=850) * (t_850.differentiate('longitude') * dx_scalar) + 
+                            ds_pres['v'].sel(pressure_level=850) * (t_850.differentiate('latitude') * dy_scalar))
+    ds_eng['adv_q_850'] = -(ds_pres['u'].sel(pressure_level=850) * (q_850.differentiate('longitude') * dx_scalar) + 
+                            ds_pres['v'].sel(pressure_level=850) * (q_850.differentiate('latitude') * dy_scalar))
     
-    ds_eng['grad_sp_x'] = ds_surf['sp'].differentiate('longitude')
-    ds_eng['grad_sp_y'] = ds_surf['sp'].differentiate('latitude')
+    ds_eng['grad_sp_x'] = ds_surf['sp'].differentiate('longitude') * dx_scalar
+    ds_eng['grad_sp_y'] = ds_surf['sp'].differentiate('latitude') * dy_scalar
 
     # 26-28. Vertical Integrations (Sum across 1000, 850, 500, 250)
     ds_eng['col_q'] = ds_pres['q'].sum(dim='pressure_level')
@@ -79,10 +105,10 @@ def engineer_physical_features(ds_surf, ds_pres):
     flux_q_y = ds_pres['v'].sel(pressure_level=850) * q_850
     ds_eng['flux_q_x'] = flux_q_x
     ds_eng['flux_q_y'] = flux_q_y
-    ds_eng['mfc_850'] = -(flux_q_x.differentiate('longitude') + flux_q_y.differentiate('latitude'))
+    ds_eng['mfc_850'] = -((flux_q_x.differentiate('longitude') * dx_scalar) + (flux_q_y.differentiate('latitude') * dy_scalar))
     
     ds_eng['rad_balance'] = ds_surf['ssr'] + ds_surf['ttr']
-    ds_eng['grad_cc_x'] = ds_pres['cc'].sel(pressure_level=500).differentiate('longitude')
+    ds_eng['grad_cc_x'] = ds_pres['cc'].sel(pressure_level=500).differentiate('longitude') * dx_scalar
 
     # 34-37. Cyclical time extraction mapped to continuous vectors
     times = ds_surf['valid_time'].dt
@@ -103,11 +129,7 @@ def engineer_physical_features(ds_surf, ds_pres):
     
     u_500 = ds_pres['u'].sel(pressure_level=500)
     v_500 = ds_pres['v'].sel(pressure_level=500)
-    ds_eng['def_stretch'] = u_500.differentiate('longitude') - v_500.differentiate('latitude')
-    ds_eng['def_shear'] = v_500.differentiate('longitude') + u_500.differentiate('latitude')
+    ds_eng['def_stretch'] = (u_500.differentiate('longitude') * dx_scalar) - (v_500.differentiate('latitude') * dy_scalar)
+    ds_eng['def_shear'] = (v_500.differentiate('longitude') * dx_scalar) + (u_500.differentiate('latitude') * dy_scalar)
     
     return ds_eng
-
-# Example Execution:
-# ds_engineered = engineer_physical_features(ds_surface, ds_pressure)
-# print(list(ds_engineered.data_vars.keys()))

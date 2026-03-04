@@ -64,7 +64,8 @@ def process_features():
                 
         print("  -> Merging strictly 3D state matrices with engineered features...")
         # ds_unified is now guaranteed to be strictly R^(T x 64 x 64) across all variables
-        ds_unified = xr.merge([ds_surf, ds_pres_flat, ds_eng], compat='override')
+        ds_surf, ds_pres_flat, ds_eng = xr.align(ds_surf, ds_pres_flat, ds_eng, join='exact')
+        ds_unified = xr.merge([ds_surf, ds_pres_flat, ds_eng])
         
         output_path = os.path.join(output_dir, f"engineered_{year}.nc")
         print(f"  -> Executing compute graph and serializing to {output_path}...")
