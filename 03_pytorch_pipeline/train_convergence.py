@@ -27,11 +27,30 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     # 2. Memory-Mapped Dataset Allocation
     full_dataset = MeteorologicalDataset(tensor_dir="/workspace/data/processed/tensors/", horizon=1)
     
-    # Chronological Matrix Splitting (1996-2019 Train | 2020-2021 Validation)
+    # Define the accumulation scalar explicitly here
+    accumulation_steps = 4
+    
+    # Chronological Matrix Splitting
     train_end_idx = 35064 
     val_end_idx = train_end_idx + (2 * 1460)
     
-    train_subset = Subset(full_dataset, range(0, train_end_idx - full_dataset.horizon))
+    # --- Exact Mathematical Boundary Truncation ---
+    # 1. Determine the absolute maximum bounds permitted without chronological leakage
+    raw_train_len = train_end_idx - full_dataset.horizon
+    
+    # 2. Calculate the total number of physical batches this limit supports
+    total_physical_batches = raw_train_len // BATCH_SIZE
+    
+    # 3. Force the physical batch count to a perfect multiple of the accumulation steps
+    valid_effective_batches = total_physical_batches // accumulation_steps
+    perfect_physical_batches = valid_effective_batches * accumulation_steps
+    
+    # 4. Project the valid batch count back into an absolute tensor index
+    perfect_train_len = perfect_physical_batches * BATCH_SIZE
+    # ----------------------------------------------
+    
+    # Allocate the Subsets using the strictly defragmented boundaries
+    train_subset = Subset(full_dataset, range(0, perfect_train_len))
     val_subset = Subset(full_dataset, range(train_end_idx, val_end_idx - full_dataset.horizon))
     
     train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, 
