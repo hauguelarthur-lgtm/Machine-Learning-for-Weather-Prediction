@@ -63,7 +63,12 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     optimizer = torch.optim.AdamW(model.parameters(), lr=OPTIMAL_LR, weight_decay=OPTIMAL_WD)
     
     # Dynamic LR reduction when validation loss plateaus
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, 
+        T_0=10,        # Initial restart cycle length (epochs)
+        T_mult=2,      # Double the cycle length after each restart
+        eta_min=1e-6   # Minimum learning rate bound
+    )
     
     lats = extract_latitudes()
     criterion = LatitudeWeightedMSELoss(latitudes=lats).to(device)
@@ -141,10 +146,10 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
         # We track the mean RMSE across all channels for the scalar scheduler
         avg_val_rmse = torch.mean(true_global_rmse).item()
         # Adjust learning rate based on strictly independent validation data
-        scheduler.step(avg_val_rmse)
-        
+
         print(f"Epoch [{epoch:03d}/{EPOCHS}] | Train Loss: {avg_train_loss:.4e} | Val Mean RMSE: {avg_val_rmse:.4f}")
         
+        scheduler.step()
         # 6. Strict Checkpointing Logic
         checkpoint = {
             'epoch': epoch,

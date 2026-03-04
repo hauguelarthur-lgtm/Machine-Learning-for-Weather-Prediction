@@ -1,38 +1,32 @@
 import torch
 import torch.nn as nn
 
+from torch.nn.utils.parametrizations import spectral_norm
+
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
-        """
-        Calculates the residual mapping for spatial fluid features.
-        If channel dimensions change, a 1x1 convolution aligns the identity tensor.
-        """
         super().__init__()
         
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, padding_mode='replicate', bias=False)
-        self.bn1 = nn.InstanceNorm2d(out_channels, affine=True)
+        # Apply Spectral Normalization directly to the convolutional weights
+        self.conv1 = spectral_norm(nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, padding_mode='replicate', bias=False))
         self.act = nn.SiLU(inplace=True)
         
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, padding_mode='replicate',bias=False)
-        self.bn2 = nn.InstanceNorm2d(out_channels, affine=True)
+        self.conv2 = spectral_norm(nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, padding_mode='replicate', bias=False))
         
-        # Identity mapping alignment
+        # Identity mapping alignment strictly bounded
         if in_channels != out_channels:
-            self.identity_align = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+            self.identity_align = spectral_norm(nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False))
         else:
             self.identity_align = nn.Identity()
 
     def forward(self, x):
         identity = self.identity_align(x)
         
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.act(out)
-        
+        # BN/IN layers are entirely removed. 
+        # The thermodynamic state magnitude is strictly preserved.
+        out = self.act(self.conv1(x))
         out = self.conv2(out)
-        out = self.bn2(out)
         
-        # The mathematical core of the ResNet
         out += identity
         out = self.act(out)
         return out
