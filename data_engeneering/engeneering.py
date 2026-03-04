@@ -134,8 +134,8 @@ def engineer_physical_features(ds_surf, ds_pres):
     mass_scalar = 100.0 / G_0 
     
     ds_eng['col_q'] = np.abs(ds_pres['q'].integrate(coord='pressure_level') * mass_scalar)
-    ds_eng['col_clwc'] = ds_pres['clwc'].integrate(coord='pressure_level') * mass_scalar
-    ds_eng['col_ciwc'] = ds_pres['ciwc'].integrate(coord='pressure_level') * mass_scalar
+    ds_eng['col_clwc'] = np.abs(ds_pres['clwc'].integrate(coord='pressure_level') * mass_scalar)
+    ds_eng['col_ciwc'] = np.abs(ds_pres['ciwc'].integrate(coord='pressure_level') * mass_scalar)
     
     # ---------------------------------------------------------
     # 29-33. FLUX AND RADIATION DIVERGENCE
