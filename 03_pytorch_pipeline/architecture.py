@@ -10,9 +10,9 @@ class ResidualBlock(nn.Module):
         def apply_sn(layer):
             return spectral_norm(layer) if use_sn else layer
 
-        self.conv1 = apply_sn(nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, padding_mode='replicate', bias=False))
+        self.conv1 = apply_sn(nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, padding_mode='reflect', bias=False))
         self.act = nn.SiLU(inplace=True)
-        self.conv2 = apply_sn(nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, padding_mode='replicate', bias=False))
+        self.conv2 = apply_sn(nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, padding_mode='reflect', bias=False))
         
         if in_channels != out_channels:
             self.identity_align = apply_sn(nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False))
@@ -47,25 +47,25 @@ class ResUNet(nn.Module):
         # Decoder: C1 continuous bilinear upsampling with strictly bounded deep matrices
         self.up4 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            spectral_norm(nn.Conv2d(base_filters * 16, base_filters * 8, kernel_size=3, padding=1, padding_mode='replicate', bias=False))
+            spectral_norm(nn.Conv2d(base_filters * 16, base_filters * 8, kernel_size=3, padding=1, padding_mode='reflect', bias=False))
         )
         self.dec4 = ResidualBlock(base_filters * 16, base_filters * 8, use_sn=True)
         
         self.up3 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            spectral_norm(nn.Conv2d(base_filters * 8, base_filters * 4, kernel_size=3, padding=1, padding_mode='replicate', bias=False))
+            spectral_norm(nn.Conv2d(base_filters * 8, base_filters * 4, kernel_size=3, padding=1, padding_mode='reflect', bias=False))
         )
         self.dec3 = ResidualBlock(base_filters * 8, base_filters * 4, use_sn=True)
         
         self.up2 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            nn.Conv2d(base_filters * 4, base_filters * 2, kernel_size=3, padding=1, padding_mode='replicate', bias=False)
+            nn.Conv2d(base_filters * 4, base_filters * 2, kernel_size=3, padding=1, padding_mode='reflect', bias=False)
         )
         self.dec2 = ResidualBlock(base_filters * 4, base_filters * 2, use_sn=False)
         
         self.up1 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            nn.Conv2d(base_filters * 2, base_filters, kernel_size=3, padding=1, padding_mode='replicate', bias=False)
+            nn.Conv2d(base_filters * 2, base_filters, kernel_size=3, padding=1, padding_mode='reflect', bias=False)
         )
         self.dec1 = ResidualBlock(base_filters * 2, base_filters, use_sn=False)
         
