@@ -6,7 +6,7 @@ class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, use_sn=False):
         super().__init__()
         
-        # Dynamically apply spectral norm only to the required deep matrices
+        # Dynamically apply spectral normalization strictly to deep matrices
         def apply_sn(layer):
             return spectral_norm(layer) if use_sn else layer
 
@@ -30,13 +30,13 @@ class ResUNet(nn.Module):
     def __init__(self, in_channels=102, out_channels=102, base_filters=128):
         super().__init__()
         
-        # Outer blocks: Unnormalized for temporal efficiency
+        # Outer Blocks: High-frequency processing, unnormalized
         self.enc1 = ResidualBlock(in_channels, base_filters, use_sn=False)
         self.pool1 = nn.MaxPool2d(2)
         self.enc2 = ResidualBlock(base_filters, base_filters * 2, use_sn=False)
         self.pool2 = nn.MaxPool2d(2)
         
-        # Deep blocks: Strictly Lipschitz bounded
+        # Deep Blocks: Low-frequency processing, strictly Lipschitz bounded
         self.enc3 = ResidualBlock(base_filters * 2, base_filters * 4, use_sn=True)
         self.pool3 = nn.MaxPool2d(2)
         self.enc4 = ResidualBlock(base_filters * 4, base_filters * 8, use_sn=True)
@@ -44,7 +44,7 @@ class ResUNet(nn.Module):
         
         self.bottleneck = ResidualBlock(base_filters * 8, base_filters * 16, use_sn=True)
         
-        # Upsampling with strictly C1 continuous bilinear interpolation
+        # Decoder: C1 continuous bilinear upsampling
         self.up4 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(base_filters * 16, base_filters * 8, kernel_size=3, padding=1, padding_mode='replicate', bias=False)
@@ -72,7 +72,6 @@ class ResUNet(nn.Module):
         self.final_conv = nn.Conv2d(base_filters, out_channels, kernel_size=1)
 
     def forward(self, x):
-        # [Forward logic remains exactly identical]
         e1 = self.enc1(x)
         e2 = self.enc2(self.pool1(e1))
         e3 = self.enc3(self.pool2(e2))

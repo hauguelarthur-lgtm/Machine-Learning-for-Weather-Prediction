@@ -17,6 +17,7 @@ def extract_latitudes(reference_file="/workspace/data/processed/latitudes.npy"):
     """Extracts the definitive latitude array for the spatial loss function."""
     lats = np.load(reference_file)
     return lats
+
 def get_objective(train_subset, val_subset):
     def objective(trial):
         """
@@ -105,11 +106,13 @@ def get_objective(train_subset, val_subset):
                     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                         val_preds = model(x_val)
                         
-                    # Evaluate strictly the target boundary error to guide TPE
-                    surface_val_pred = val_preds[:, surface_indices, :, :]
-                    surface_val_targ = y_val_step_1[:, surface_indices, :, :]
-                    batch_loss = criterion(surface_val_pred.float(), surface_val_targ.float())
-                
+                        val_base_loss = criterion(val_preds.float(), y_val_step_1.float())
+                        val_surf_pred = val_preds[:, surface_indices, :, :]
+                        val_surf_targ = y_val_step_1[:, surface_indices, :, :]
+                        val_surf_loss = criterion(val_surf_pred.float(), val_surf_targ.float())
+                        
+                        batch_loss = val_base_loss + (15.0 * val_surf_loss)
+                        
                     total_val_loss += batch_loss.item() * current_batch_size
                     total_samples += current_batch_size
                 
