@@ -51,14 +51,6 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=300):
     val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=8, pin_memory=True, drop_last=False, worker_init_fn=worker_init_fn, persistent_workers=True)
     
-    model = ResUNet(in_channels=102, out_channels=102).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=OPTIMAL_LR, weight_decay=OPTIMAL_WD)
-    
-    # Strictly periodic cosine annealing bounded to the exact 50-epoch phase transitions
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=50, T_mult=1, eta_min=1e-6
-    )
-    
     lats = extract_latitudes()
     criterion = LatitudeWeightedMSELoss(latitudes=lats).to(device)
     evaluator = WeatherBench2Metrics(latitudes=lats)
