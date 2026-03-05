@@ -44,16 +44,16 @@ class ResUNet(nn.Module):
         
         self.bottleneck = ResidualBlock(base_filters * 8, base_filters * 16, use_sn=True)
         
-        # Decoder: C1 continuous bilinear upsampling
+        # Decoder: C1 continuous bilinear upsampling with strictly bounded deep matrices
         self.up4 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            nn.Conv2d(base_filters * 16, base_filters * 8, kernel_size=3, padding=1, padding_mode='replicate', bias=False)
+            spectral_norm(nn.Conv2d(base_filters * 16, base_filters * 8, kernel_size=3, padding=1, padding_mode='replicate', bias=False))
         )
         self.dec4 = ResidualBlock(base_filters * 16, base_filters * 8, use_sn=True)
         
         self.up3 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            nn.Conv2d(base_filters * 8, base_filters * 4, kernel_size=3, padding=1, padding_mode='replicate', bias=False)
+            spectral_norm(nn.Conv2d(base_filters * 8, base_filters * 4, kernel_size=3, padding=1, padding_mode='replicate', bias=False))
         )
         self.dec3 = ResidualBlock(base_filters * 8, base_filters * 4, use_sn=True)
         

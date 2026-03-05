@@ -42,15 +42,15 @@ def get_objective(train_subset, val_subset):
         # num_workers must be low (e.g., 2-4) to prevent I/O thrashing on the SSD memmaps.
         def worker_init_fn(worker_id):
             worker_info = torch.utils.data.get_worker_info()
-            dataset = worker_info.dataset
-            dataset.mmaps = [np.load(f, mmap_mode='r') for f in dataset.tensor_files]
+            # Strictly unpack the PyTorch Subset object
+            base_dataset = worker_info.dataset.dataset
+            base_dataset.mmaps = [np.load(f, mmap_mode='r') for f in base_dataset.tensor_files]
 
         train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, 
                               num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
         val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, 
                             num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn) 
     
-        surface_indices = torch.tensor([3,4,5,6], device=device)
 
         # 5. Fast Evaluation Loop (3 Epochs per Trial)
         epochs = 15 
@@ -74,8 +74,8 @@ def get_objective(train_subset, val_subset):
                 
                 # Topologically aligned composite loss calculation
                 base_loss = criterion(predictions.float(), y_step_1.float())
-                surface_pred = predictions[:, surface_indices, :, :]
-                surface_targ = y_step_1[:, surface_indices, :, :]
+                surface_pred = predictions[:, 3:7, :, :]
+                surface_targ = y_step_1[:, 3:7, :, :]
                 surface_loss = criterion(surface_pred.float(), surface_targ.float())
                 
                 composite_loss = (base_loss + (15.0 * surface_loss)) / accumulation_steps
@@ -107,8 +107,8 @@ def get_objective(train_subset, val_subset):
                         val_preds = model(x_val)
                         
                         val_base_loss = criterion(val_preds.float(), y_val_step_1.float())
-                        val_surf_pred = val_preds[:, surface_indices, :, :]
-                        val_surf_targ = y_val_step_1[:, surface_indices, :, :]
+                        val_surf_pred = val_preds[:, 3:7, :, :]
+                        val_surf_targ = y_val_step_1[:, 3:7, :, :]
                         val_surf_loss = criterion(val_surf_pred.float(), val_surf_targ.float())
                         
                         batch_loss = val_base_loss + (15.0 * val_surf_loss)

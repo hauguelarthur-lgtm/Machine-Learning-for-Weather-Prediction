@@ -12,8 +12,9 @@ from metrics import WeatherBench2Metrics
 
 def worker_init_fn(worker_id):
     worker_info = torch.utils.data.get_worker_info()
-    dataset = worker_info.dataset
-    dataset.mmaps = [np.load(f, mmap_mode='r') for f in dataset.tensor_files]
+    # Strictly unpack the PyTorch Subset object
+    base_dataset = worker_info.dataset.dataset
+    base_dataset.mmaps = [np.load(f, mmap_mode='r') for f in base_dataset.tensor_files]
 
 def extract_latitudes(reference_file="/workspace/data/processed/latitudes.npy"):
     lats = np.load(reference_file)
@@ -48,8 +49,6 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=4, pin_memory=True, drop_last=False, worker_init_fn=worker_init_fn)
     
-    surface_indices = torch.tensor([3,4,5,6], device=device)
-
     model = ResUNet(in_channels=102, out_channels=102).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=OPTIMAL_LR, weight_decay=OPTIMAL_WD)
     
@@ -92,8 +91,8 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                     
                     # Compute Composite Differentiable Loss
                     base_loss = criterion(next_state.float(), target_state.float())
-                    surface_pred = next_state[:, surface_indices, :, :]
-                    surface_targ = target_state[:, surface_indices, :, :]
+                    surface_pred = next_state[:, 3:7, :, :]
+                    surface_targ = target_state[:, 3:7, :, :]
                     surface_loss = criterion(surface_pred.float(), surface_targ.float())
                     
                     step_loss = base_loss + (15.0 * surface_loss)
@@ -101,8 +100,10 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                     
                     # Scheduled Sampling: Probabilistic state pushforward
                     if k < rollout_steps - 1:
-                        current_state = (teacher_forcing_ratio * target_state) + \
-                                        ((1.0 - teacher_forcing_ratio) * next_state)
+                        # Forward pass evaluates to: (ratio * target) + ((1 - ratio) * next)
+                        # Backward pass ignores the detached tensor, leaving d(current)/d(next) = 1.0
+                        # This preserves 100% of the gradient magnitude through the BPTT chain.
+                        current_state = next_state + (target_state - next_state).detach() * teacher_forcing_ratio
                 
                 loss = loss / (accumulation_steps * gamma_sum)
                 
@@ -144,7 +145,7 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
         true_global_rmse = torch.sqrt(true_global_mse)
         
         # Isolate the validation scalar strictly to the targeted boundary layer physics
-        surface_rmse = true_global_rmse[surface_indices]
+        surface_rmse = true_global_rmse[3:7]
         avg_val_rmse = torch.mean(surface_rmse).item() 
 
         print(f"Epoch [{epoch:03d}/{EPOCHS}] | Train Loss: {avg_train_loss:.4e} | Val Surface RMSE: {avg_val_rmse:.4f}")
