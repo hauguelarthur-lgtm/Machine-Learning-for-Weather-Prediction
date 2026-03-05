@@ -194,4 +194,4 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
 
 if __name__ == "__main__":
     # Example execution with fixed parameters, update to pass Optuna parameters
-    execute_training_pipeline(OPTIMAL_LR=4.63e-4, OPTIMAL_WD=1.14e-4, BATCH_SIZE=16, EPOCHS=100)
+    execute_training_pipeline(OPTIMAL_LR=0.000441, OPTIMAL_WD=0.00034, BATCH_SIZE=16, EPOCHS=150)
