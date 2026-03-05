@@ -20,10 +20,10 @@ def extract_latitudes(reference_file="/workspace/data/processed/latitudes.npy"):
     lats = np.load(reference_file)
     return lats
 
-def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
+def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=150):
 
     torch.backends.cudnn.benchmark = True
-    print(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS)
+    print(f"Initializing Convergence Trajectory: LR={OPTIMAL_LR}, WD={OPTIMAL_WD}, BATCH={BATCH_SIZE}, EPOCHS={EPOCHS}")
     
     os.makedirs("./models/checkpoints/", exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,8 +54,9 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     model = ResUNet(in_channels=102, out_channels=102).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=OPTIMAL_LR, weight_decay=OPTIMAL_WD)
     
+    # Strictly periodic cosine annealing bounded to the exact 50-epoch phase transitions
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=10, T_mult=2, eta_min=1e-6
+        optimizer, T_0=50, T_mult=1, eta_min=1e-6
     )
     
     lats = extract_latitudes()
@@ -66,8 +67,7 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     best_val_rmse = float('inf')
 
     gamma = 0.9
-    gamma_sum = sum([gamma ** k for k in range(rollout_steps)])
-    # Inside execute_training_pipeline loop:
+    
     for epoch in range(1, EPOCHS + 1):
         model.train()
         train_loss_accum = 0.0
@@ -76,13 +76,13 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
         # -------------------------------------------------------------
         # Progressive Temporal Unrolling Curriculum
         # -------------------------------------------------------------
-        # Phase 1: 1-Step Advection (Optimize base physical mapping)
-        if epoch <= int(EPOCHS * 0.3):
+        # Phase 1: 1-Step Advection (Epochs 1 - 50)
+        if epoch <= 50:
             active_rollout_steps = 1
-        # Phase 2: 2-Step Compounding (Learn first-order exposure bias)
-        elif epoch <= int(EPOCHS * 0.6):
+        # Phase 2: 2-Step Compounding (Epochs 51 - 100)
+        elif epoch <= 100:
             active_rollout_steps = 2
-        # Phase 3: 3-Step Horizon (Full continuous global trajectory)
+        # Phase 3: 3-Step Horizon (Epochs 101 - 150)
         else:
             active_rollout_steps = rollout_steps
             
@@ -114,24 +114,26 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                     step_loss = base_loss + (15.0 * surface_loss)
                     loss += step_loss * (gamma ** k)
                     
-                    # -------------------------------------------------------------
                     # Strict Autoregression (Zero Gradient Bias)
-                    # -------------------------------------------------------------
                     if k < active_rollout_steps - 1:
-                        # Feed the exact, unmodified neural prediction to the next step.
-                        # No detached tensors, no estimators, no ground truth injection.
                         current_state = next_state 
                 
-                loss = loss / accumulation_steps
+                # Dynamic normalization by the exact temporal integral to prevent gradient explosion
+                loss = loss / (accumulation_steps * active_gamma_sum)
                 
             loss.backward()
             
             if ((batch_idx + 1) % accumulation_steps == 0) or ((batch_idx + 1) == len(train_loader)):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                
+                # Continuous fractional step evaluation for the Cosine Manifold
+                current_fractional_epoch = epoch - 1 + (batch_idx / len(train_loader))
+                scheduler.step(current_fractional_epoch)
+                
                 optimizer.zero_grad(set_to_none=True)
             
-            train_loss_accum += (loss.item() * accumulation_steps)
+            train_loss_accum += (loss.item() * accumulation_steps * active_gamma_sum)
             
         avg_train_loss = train_loss_accum / len(train_loader)
         
@@ -148,21 +150,18 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                 y_val = y_val.to(device, non_blocking=True)
                 batch_size = x_val.size(0)
                 
-                # Execute full autoregressive rollout without teacher forcing
                 current_state = x_val
                 rollout_mse = torch.zeros(102, device=device)
                 
+                # Validation strictly evaluates the full K=3 global trajectory 
                 for k in range(rollout_steps):
                     target_state = y_val[:, k]
                     
                     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                        # Predict next state and feed back as next input
                         current_state = model(current_state)
                         
-                    # Accumulate error across the entire temporal horizon
                     rollout_mse += evaluator.compute_mse(current_state.float(), target_state.float())
                 
-                # Mean error across the rollout duration
                 avg_rollout_mse = rollout_mse / rollout_steps
                 global_mse_accum += avg_rollout_mse * batch_size
                 total_val_samples += batch_size 
@@ -170,13 +169,10 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
         true_global_mse = global_mse_accum / total_val_samples
         true_global_rmse = torch.sqrt(true_global_mse)
         
-        # Isolate the validation scalar strictly to the targeted boundary layer physics
         surface_rmse = true_global_rmse[3:7]
         avg_val_rmse = torch.mean(surface_rmse).item() 
 
         print(f"Epoch [{epoch:03d}/{EPOCHS}] | Train Loss: {avg_train_loss:.4e} | Val Surface RMSE: {avg_val_rmse:.4f}")
-        
-        scheduler.step()
         
         checkpoint_dict = {
             'epoch': epoch,
@@ -185,12 +181,22 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
             'scheduler_state_dict': scheduler.state_dict(),
             'val_surface_rmse': avg_val_rmse
         }
-        torch.save(checkpoint_dict, "./models/checkpoints/resunet_latest.pth")
+        
+        # -------------------------------------------------------------
+        # I/O State Machine: Atomic Serialization
+        # -------------------------------------------------------------
+        tmp_latest = "./models/checkpoints/resunet_latest_tmp.pth"
+        out_latest = "./models/checkpoints/resunet_latest.pth"
+        torch.save(checkpoint_dict, tmp_latest)
+        os.replace(tmp_latest, out_latest)
 
         if avg_val_rmse < best_val_rmse:
             best_val_rmse = avg_val_rmse
-            torch.save(checkpoint_dict, "./models/checkpoints/resunet_optimal.pth")
-            print(f"  -> Targeted boundary layer metrics improved. Checkpoint serialized to SSD.")
+            tmp_opt = "./models/checkpoints/resunet_optimal_tmp.pth"
+            out_opt = "./models/checkpoints/resunet_optimal.pth"
+            torch.save(checkpoint_dict, tmp_opt)
+            os.replace(tmp_opt, out_opt)
+            print(f"  -> Targeted boundary layer metrics improved. Checkpoint serialized atomically to SSD.")
 
 if __name__ == "__main__":
     # Example execution with fixed parameters, update to pass Optuna parameters
