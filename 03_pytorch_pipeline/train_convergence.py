@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
+import torch.utils.checkpoint as checkpoint
 import numpy as np
 import os
-import xarray as xr
 
 from dataset import MeteorologicalDataset
 from architecture import ResUNet
@@ -11,63 +11,43 @@ from loss_functions import LatitudeWeightedMSELoss
 from metrics import WeatherBench2Metrics
 
 def extract_latitudes(reference_file="/workspace/data/processed/latitudes.npy"):
-    """Extracts the definitive latitude array for the spatial loss function."""
     lats = np.load(reference_file)
     return lats
 
 def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
-    # 1. Optimal Hyperparameter Injection
-    # Replace these with the exact output from train_hyperparameters.py
     print(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS)
     
     os.makedirs("./models/checkpoints/", exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Target Hardware: {device}")
 
-    # 2. Memory-Mapped Dataset Allocation
-    full_dataset = MeteorologicalDataset(tensor_dir="/workspace/data/processed/tensors/", horizon=1)
+    rollout_steps = 3
+    full_dataset = MeteorologicalDataset(tensor_dir="/workspace/data/processed/tensors/", rollout_steps=rollout_steps)
     
-    # Define the accumulation scalar explicitly here
     accumulation_steps = 4
     
-    # Chronological Matrix Splitting
     train_end_idx = 35064 
     val_end_idx = train_end_idx + (2 * 1460)
     
-    # --- Exact Mathematical Boundary Truncation ---
-    # 1. Determine the absolute maximum bounds permitted without chronological leakage
-    raw_train_len = train_end_idx - full_dataset.horizon
-    
-    # 2. Calculate the total number of physical batches this limit supports
+    raw_train_len = train_end_idx - full_dataset.rollout_steps
     total_physical_batches = raw_train_len // BATCH_SIZE
-    
-    # 3. Force the physical batch count to a perfect multiple of the accumulation steps
     valid_effective_batches = total_physical_batches // accumulation_steps
     perfect_physical_batches = valid_effective_batches * accumulation_steps
-    
-    # 4. Project the valid batch count back into an absolute tensor index
     perfect_train_len = perfect_physical_batches * BATCH_SIZE
-    # ----------------------------------------------
     
-    # Allocate the Subsets using the strictly defragmented boundaries
     train_subset = Subset(full_dataset, range(0, perfect_train_len))
-    val_subset = Subset(full_dataset, range(train_end_idx, val_end_idx - full_dataset.horizon))
+    val_subset = Subset(full_dataset, range(train_end_idx, val_end_idx - full_dataset.rollout_steps))
     
     train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, 
                               num_workers=4, pin_memory=True, drop_last=True)
     val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=4, pin_memory=True, drop_last=False)
     
-    # 3. Model & Mathematics Initialization
     model = ResUNet(in_channels=102, out_channels=102).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=OPTIMAL_LR, weight_decay=OPTIMAL_WD)
     
-    # Dynamic LR reduction when validation loss plateaus
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, 
-        T_0=10,        # Initial restart cycle length (epochs)
-        T_mult=2,      # Double the cycle length after each restart
-        eta_min=1e-6   # Minimum learning rate bound
+        optimizer, T_0=10, T_mult=2, eta_min=1e-6
     )
     
     lats = extract_latitudes()
@@ -77,49 +57,64 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     
     best_val_rmse = float('inf')
 
-    accumulation_steps = 4  # Enforce the same dynamic scalar
+    # Strictly isolated index array for the targeted surface variables. 
+    # Assumes MSLP, T2M, U10, V10 correlate to indices [0, 1, 2, 3].
+    # You must verify this aligns with your channel_ordering.json.
+    surface_indices = torch.tensor([0, 1, 2, 3], device=device)
     
-    # 4. Global Convergence Loop
     for epoch in range(1, EPOCHS + 1):
         model.train()
         train_loss_accum = 0.0
         
-        # Flush the gradients before the first batch of the epoch
         optimizer.zero_grad(set_to_none=True)
         
         for batch_idx, (x, y) in enumerate(train_loader):
-            # Asynchronous VRAM transfer
             x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True) # R^(B, K, C, H, W)
             
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                predictions = model(x)
-            
-            # Scale the loss strictly for physical accumulation, not precision preservation
-            loss = criterion(predictions.float(), y.float()) / accumulation_steps
+                loss = 0.0
+                current_state = x
+                gamma = 0.9 
                 
-            # Direct mathematical backpropagation
+                for k in range(rollout_steps):
+                    target_state = y[:, k]
+                    
+                    next_state = checkpoint.checkpoint(
+                        model, current_state, use_reentrant=False, preserve_rng_state=False
+                    )
+                    
+                    # Compute the holistic fluid advection error
+                    base_loss = criterion(next_state.float(), target_state.float())
+                    
+                    # Compute the mathematically isolated surface boundary layer error
+                    surface_pred = next_state[:, surface_indices, :, :]
+                    surface_targ = target_state[:, surface_indices, :, :]
+                    surface_loss = criterion(surface_pred.float(), surface_targ.float())
+                    
+                    # Composite aggregation (Weight=15.0 prioritizes surface convergence)
+                    step_loss = base_loss + (15.0 * surface_loss)
+                    
+                    loss += step_loss * (gamma ** k)
+                    current_state = next_state
+                
+                loss = loss / (accumulation_steps * rollout_steps)
+                
             loss.backward()
             
-            # Boundary check: Update weights when the sub-batch queue is full
             if ((batch_idx + 1) % accumulation_steps == 0) or ((batch_idx + 1) == len(train_loader)):
-                # L2 Clipping applied directly to the native, unscaled bfloat16 gradients
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                
                 optimizer.step()
-                
-                # Reset gradients for the next cycle
                 optimizer.zero_grad(set_to_none=True)
             
-            # Multiply the scaled loss back by accumulation_steps to record the true physical scalar
             train_loss_accum += (loss.item() * accumulation_steps)
             
         avg_train_loss = train_loss_accum / len(train_loader)
         
-        # 5. Validation and Metric Tracking
+        # -------------------------------------------------------------
+        # Validation Phase: Strict Surface Isolation Tracking
+        # -------------------------------------------------------------
         model.eval()
-        
-        # Initialize an accumulator tensor of shape (102,) on the GPU
         global_mse_accum = torch.zeros(102, device=device)
         total_val_samples = 0
         
@@ -129,41 +124,41 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                 y_val = y_val.to(device, non_blocking=True)
                 batch_size = x_val.size(0)
                 
+                # Evaluate strictly on the t+1 baseline to monitor uncompounded error
+                y_val_step_1 = y_val[:, 0]
+                
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     val_preds = model(x_val)
                     
-                # Extract batch MSE per channel: shape (102,)
-                batch_mse = evaluator.compute_mse(val_preds.float(), y_val.float()) 
-                
-                # Multiply by batch_size to eliminate batch averaging bias, then sum
+                batch_mse = evaluator.compute_mse(val_preds.float(), y_val_step_1.float()) 
                 global_mse_accum += batch_mse * batch_size
                 total_val_samples += batch_size
                 
-        # Calculate true global MSE, then apply the square root strictly once
         true_global_mse = global_mse_accum / total_val_samples
         true_global_rmse = torch.sqrt(true_global_mse)
         
-        # We track the mean RMSE across all channels for the scalar scheduler
-        avg_val_rmse = torch.mean(true_global_rmse).item()
-        # Adjust learning rate based on strictly independent validation data
+        # Isolate the validation scalar strictly to the targeted boundary layer physics
+        surface_rmse = true_global_rmse[surface_indices]
+        avg_val_rmse = torch.mean(surface_rmse).item() 
 
-        print(f"Epoch [{epoch:03d}/{EPOCHS}] | Train Loss: {avg_train_loss:.4e} | Val Mean RMSE: {avg_val_rmse:.4f}")
+        print(f"Epoch [{epoch:03d}/{EPOCHS}] | Train Loss: {avg_train_loss:.4e} | Val Surface RMSE: {avg_val_rmse:.4f}")
         
         scheduler.step()
-        # 6. Strict Checkpointing Logic
-        checkpoint = {
+        
+        checkpoint_dict = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'val_rmse': avg_val_rmse
+            'val_surface_rmse': avg_val_rmse
         }
-        torch.save(checkpoint, "./models/checkpoints/resunet_latest.pth")
+        torch.save(checkpoint_dict, "./models/checkpoints/resunet_latest.pth")
 
         if avg_val_rmse < best_val_rmse:
             best_val_rmse = avg_val_rmse
-            torch.save(checkpoint, "./models/checkpoints/resunet_optimal.pth")
-            print(f"  -> Physical state improved. Checkpoint serialized to SSD.")
+            torch.save(checkpoint_dict, "./models/checkpoints/resunet_optimal.pth")
+            print(f"  -> Targeted boundary layer metrics improved. Checkpoint serialized to SSD.")
 
 if __name__ == "__main__":
-    execute_training_pipeline()
+    # Example execution with fixed parameters, update to pass Optuna parameters
+    execute_training_pipeline(OPTIMAL_LR=4.63e-4, OPTIMAL_WD=1.14e-4, BATCH_SIZE=16, EPOCHS=100)

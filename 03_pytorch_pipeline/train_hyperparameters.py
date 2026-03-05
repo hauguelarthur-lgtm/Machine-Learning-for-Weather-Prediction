@@ -7,7 +7,7 @@ import os
 import xarray as xr
 
 # Import your custom pipeline modules
-from dataset import MeteorologicalDataset
+from dataset import MeteorologicalDataset_hyper
 from architecture import ResUNet
 from loss_functions import LatitudeWeightedMSELoss
 
@@ -117,7 +117,7 @@ def get_objective(train_subset, val_subset):
 if __name__ == "__main__":
     print("Initializing Bayesian Hyperparameter Optimization...")
 
-    full_dataset = MeteorologicalDataset(tensor_dir="/workspace/data/processed/tensors/", horizon=1)
+    full_dataset = MeteorologicalDataset_hyper(tensor_dir="/workspace/data/processed/tensors/", horizon=1)
     
     # Define exact temporal boundaries to prevent chronological leakage (See Fix #3)
     train_end_idx = 35064
