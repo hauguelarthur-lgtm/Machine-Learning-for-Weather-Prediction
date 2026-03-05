@@ -20,7 +20,7 @@ def extract_latitudes(reference_file="/workspace/data/processed/latitudes.npy"):
     lats = np.load(reference_file)
     return lats
 
-def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=150):
+def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=300):
 
     torch.backends.cudnn.benchmark = True
     print(f"Initializing Convergence Trajectory: LR={OPTIMAL_LR}, WD={OPTIMAL_WD}, BATCH={BATCH_SIZE}, EPOCHS={EPOCHS}")
@@ -68,6 +68,17 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=150):
 
     gamma = 0.9
     
+    phase_length = EPOCHS // 3
+    
+    model = ResUNet(in_channels=102, out_channels=102).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=OPTIMAL_LR, weight_decay=OPTIMAL_WD)
+    
+    # 2. Strictly bind the momentum restart frequency to the phase duration
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=phase_length, T_mult=1, eta_min=1e-6
+    )
+
+
     for epoch in range(1, EPOCHS + 1):
         model.train()
         train_loss_accum = 0.0
@@ -77,12 +88,10 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=150):
         # Progressive Temporal Unrolling Curriculum
         # -------------------------------------------------------------
         # Phase 1: 1-Step Advection (Epochs 1 - 50)
-        if epoch <= 50:
+        if epoch <= phase_length:
             active_rollout_steps = 1
-        # Phase 2: 2-Step Compounding (Epochs 51 - 100)
-        elif epoch <= 100:
+        elif epoch <= (phase_length * 2):
             active_rollout_steps = 2
-        # Phase 3: 3-Step Horizon (Epochs 101 - 150)
         else:
             active_rollout_steps = rollout_steps
             
