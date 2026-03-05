@@ -21,6 +21,8 @@ def extract_latitudes(reference_file="/workspace/data/processed/latitudes.npy"):
     return lats
 
 def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
+
+    torch.backends.cudnn.benchmark = True
     print(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS)
     
     os.makedirs("./models/checkpoints/", exist_ok=True)

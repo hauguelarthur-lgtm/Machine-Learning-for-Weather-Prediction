@@ -19,6 +19,7 @@ def extract_latitudes(reference_file="/workspace/data/processed/latitudes.npy"):
     return lats
 
 def get_objective(train_subset, val_subset):
+    torch.backends.cudnn.benchmark = True
     def objective(trial):
         """
         The Optuna mathematical evaluation function.
@@ -47,9 +48,9 @@ def get_objective(train_subset, val_subset):
             base_dataset.mmaps = [np.load(f, mmap_mode='r') for f in base_dataset.tensor_files]
 
         train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, 
-                              num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
+                              num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, drop_last=True)
         val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, 
-                            num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn) 
+                            num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn, drop_last=True) 
     
 
         # 5. Fast Evaluation Loop (3 Epochs per Trial)
