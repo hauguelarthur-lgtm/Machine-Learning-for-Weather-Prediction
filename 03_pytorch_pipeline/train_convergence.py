@@ -47,9 +47,9 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=150):
     val_subset = Subset(full_dataset, range(train_end_idx, val_end_idx - full_dataset.rollout_steps))
     
     train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, 
-                              num_workers=4, pin_memory=True, drop_last=True, worker_init_fn=worker_init_fn)
+                              num_workers=8, pin_memory=True, drop_last=True, worker_init_fn=worker_init_fn, persistent_workers=True)
     val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, 
-                            num_workers=4, pin_memory=True, drop_last=False, worker_init_fn=worker_init_fn)
+                            num_workers=8, pin_memory=True, drop_last=False, worker_init_fn=worker_init_fn, persistent_workers=True)
     
     model = ResUNet(in_channels=102, out_channels=102).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=OPTIMAL_LR, weight_decay=OPTIMAL_WD)

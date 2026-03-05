@@ -37,13 +37,16 @@ class MeteorologicalDataset(Dataset):
             self.mmaps = [np.load(f, mmap_mode='r') for f in self.tensor_files]
             
         file_X, local_X = self._resolve_global_index(idx)
-        x_array = self.mmaps[file_X][local_X].copy()
+        
+        # Enforce contiguous memory alignment via stride modification, avoiding O(N) byte copy
+        x_array = np.ascontiguousarray(self.mmaps[file_X][local_X])
         
         # Extract the continuous fluid trajectory: R^(K x 102 x 64 x 64)
         y_sequence = []
         for k in range(1, self.rollout_steps + 1):
             file_Y, local_Y = self._resolve_global_index(idx + k)
-            y_sequence.append(torch.from_numpy(self.mmaps[file_Y][local_Y].copy()))
+            # Apply contiguous alignment directly to the target sequence slices
+            y_sequence.append(torch.from_numpy(np.ascontiguousarray(self.mmaps[file_Y][local_Y])))
             
         return torch.from_numpy(x_array), torch.stack(y_sequence, dim=0)
 
