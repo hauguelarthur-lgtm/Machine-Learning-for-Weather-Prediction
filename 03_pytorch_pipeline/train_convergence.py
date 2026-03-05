@@ -10,6 +10,11 @@ from architecture import ResUNet
 from loss_functions import LatitudeWeightedMSELoss
 from metrics import WeatherBench2Metrics
 
+def worker_init_fn(worker_id):
+    worker_info = torch.utils.data.get_worker_info()
+    dataset = worker_info.dataset
+    dataset.mmaps = [np.load(f, mmap_mode='r') for f in dataset.tensor_files]
+
 def extract_latitudes(reference_file="/workspace/data/processed/latitudes.npy"):
     lats = np.load(reference_file)
     return lats
@@ -39,10 +44,12 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     val_subset = Subset(full_dataset, range(train_end_idx, val_end_idx - full_dataset.rollout_steps))
     
     train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, 
-                              num_workers=4, pin_memory=True, drop_last=True)
+                              num_workers=4, pin_memory=True, drop_last=True, worker_init_fn=worker_init_fn)
     val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, 
-                            num_workers=4, pin_memory=True, drop_last=False)
+                            num_workers=4, pin_memory=True, drop_last=False, worker_init_fn=worker_init_fn)
     
+    surface_indices = torch.tensor([3,4,5,6], device=device)
+
     model = ResUNet(in_channels=102, out_channels=102).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=OPTIMAL_LR, weight_decay=OPTIMAL_WD)
     
@@ -65,12 +72,14 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     for epoch in range(1, EPOCHS + 1):
         model.train()
         train_loss_accum = 0.0
-        
         optimizer.zero_grad(set_to_none=True)
+        
+        # Calculate curriculum learning decay boundary (force 0.0 at halfway point)
+        teacher_forcing_ratio = max(0.0, 1.0 - (epoch / (EPOCHS * 0.5)))
         
         for batch_idx, (x, y) in enumerate(train_loader):
             x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True) # R^(B, K, C, H, W)
+            y = y.to(device, non_blocking=True)
             
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 loss = 0.0
@@ -84,19 +93,21 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                         model, current_state, use_reentrant=False, preserve_rng_state=False
                     )
                     
-                    # Compute the holistic fluid advection error
+                    # Compute Composite Differentiable Loss
                     base_loss = criterion(next_state.float(), target_state.float())
-                    
-                    # Compute the mathematically isolated surface boundary layer error
                     surface_pred = next_state[:, surface_indices, :, :]
                     surface_targ = target_state[:, surface_indices, :, :]
                     surface_loss = criterion(surface_pred.float(), surface_targ.float())
                     
-                    # Composite aggregation (Weight=15.0 prioritizes surface convergence)
                     step_loss = base_loss + (15.0 * surface_loss)
-                    
                     loss += step_loss * (gamma ** k)
-                    current_state = next_state
+                    
+                    # Scheduled Sampling: Probabilistic state pushforward
+                    if k < rollout_steps - 1:
+                        if torch.rand(1).item() < teacher_forcing_ratio:
+                            current_state = target_state # Anchor to true physical manifold
+                        else:
+                            current_state = next_state # Enforce exposure bias correction
                 
                 loss = loss / (accumulation_steps * rollout_steps)
                 

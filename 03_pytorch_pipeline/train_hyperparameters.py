@@ -39,12 +39,18 @@ def get_objective(train_subset, val_subset):
     
         # pin_memory=True locks the RAM pages, speeding up the CPU-to-GPU transfer.
         # num_workers must be low (e.g., 2-4) to prevent I/O thrashing on the SSD memmaps.
+        def worker_init_fn(worker_id):
+            worker_info = torch.utils.data.get_worker_info()
+            dataset = worker_info.dataset
+            dataset.mmaps = [np.load(f, mmap_mode='r') for f in dataset.tensor_files]
+
         train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, 
-                              num_workers=4, pin_memory=True)
+                              num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn)
         val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, 
-                            num_workers=4, pin_memory=True)
+                            num_workers=4, pin_memory=True, worker_init_fn=worker_init_fn) 
     
-    
+        surface_indices = torch.tensor([3,4,5,6], device=device)
+
         # 5. Fast Evaluation Loop (3 Epochs per Trial)
         epochs = 15 
     
@@ -60,16 +66,20 @@ def get_objective(train_subset, val_subset):
             
             for batch_idx, (x, y) in enumerate(train_loader):
                 x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+                y_step_1 = y[:, 0]
             
-                # Forward pass in float16
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     predictions = model(x)
                 
-                # Mathematically scale the loss to compute the true mean over the effective batch
-                loss = criterion(predictions.float(), y.float()) / accumulation_steps
+                # Topologically aligned composite loss calculation
+                base_loss = criterion(predictions.float(), y_step_1.float())
+                surface_pred = predictions[:, surface_indices, :, :]
+                surface_targ = y_step_1[:, surface_indices, :, :]
+                surface_loss = criterion(surface_pred.float(), surface_targ.float())
                 
-                # Accumulate the native gradients
-                loss.backward()
+                composite_loss = (base_loss + (15.0 * surface_loss)) / accumulation_steps
+                
+                composite_loss.backward()
             
                 # Execute the hardware update strictly at the accumulation boundary or epoch end
                 if ((batch_idx + 1) % accumulation_steps == 0) or ((batch_idx + 1) == len(train_loader)):
@@ -89,24 +99,21 @@ def get_objective(train_subset, val_subset):
             with torch.no_grad():
                 for x_val, y_val in val_loader:
                     x_val, y_val = x_val.to(device, non_blocking=True), y_val.to(device, non_blocking=True)
-                    
-                    # Extract the exact physical batch size (vital for the final remainder batch)
                     current_batch_size = x_val.size(0)
+                    y_val_step_1 = y_val[:, 0]
                 
                     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                         val_preds = model(x_val)
                         
-                    # criterion() returns the mean scalar across the batch domain
-                    batch_loss = criterion(val_preds.float(), y_val.float())
+                    # Evaluate strictly the target boundary error to guide TPE
+                    surface_val_pred = val_preds[:, surface_indices, :, :]
+                    surface_val_targ = y_val_step_1[:, surface_indices, :, :]
+                    batch_loss = criterion(surface_val_pred.float(), surface_val_targ.float())
                 
-                    # Reconstruct the absolute sum of errors for this batch and accumulate
                     total_val_loss += batch_loss.item() * current_batch_size
                     total_samples += current_batch_size
                 
-            # Divide the absolute error sum by the exact global sample count
             true_val_loss = total_val_loss / total_samples
-        
-            # Report the mathematically rigorous scalar to the TPE algorithm
             trial.report(true_val_loss, epoch)
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
