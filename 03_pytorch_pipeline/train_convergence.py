@@ -67,13 +67,27 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
 
     gamma = 0.9
     gamma_sum = sum([gamma ** k for k in range(rollout_steps)])
+    # Inside execute_training_pipeline loop:
     for epoch in range(1, EPOCHS + 1):
         model.train()
         train_loss_accum = 0.0
         optimizer.zero_grad(set_to_none=True)
         
-        # Calculate curriculum learning decay boundary (force 0.0 at halfway point)
-        teacher_forcing_ratio = max(0.0, 1.0 - (epoch / (EPOCHS * 0.5)))
+        # -------------------------------------------------------------
+        # Progressive Temporal Unrolling Curriculum
+        # -------------------------------------------------------------
+        # Phase 1: 1-Step Advection (Optimize base physical mapping)
+        if epoch <= int(EPOCHS * 0.3):
+            active_rollout_steps = 1
+        # Phase 2: 2-Step Compounding (Learn first-order exposure bias)
+        elif epoch <= int(EPOCHS * 0.6):
+            active_rollout_steps = 2
+        # Phase 3: 3-Step Horizon (Full continuous global trajectory)
+        else:
+            active_rollout_steps = rollout_steps
+            
+        # Recompute the integral of the discount scalar for the active sequence length
+        active_gamma_sum = sum([gamma ** k for k in range(active_rollout_steps)])
         
         for batch_idx, (x, y) in enumerate(train_loader):
             x = x.to(device, non_blocking=True)
@@ -82,16 +96,16 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 loss = 0.0
                 current_state = x
-                current_state.requires_grad_()  
-                              
-                for k in range(rollout_steps):
+                current_state.requires_grad_()
+                
+                # Execute strictly up to the active_rollout_steps boundary
+                for k in range(active_rollout_steps):
                     target_state = y[:, k]
                     
                     next_state = checkpoint.checkpoint(
                         model, current_state, use_reentrant=False, preserve_rng_state=False
                     )
                     
-                    # Compute Composite Differentiable Loss
                     base_loss = criterion(next_state.float(), target_state.float())
                     surface_pred = next_state[:, 3:7, :, :]
                     surface_targ = target_state[:, 3:7, :, :]
@@ -100,12 +114,13 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                     step_loss = base_loss + (15.0 * surface_loss)
                     loss += step_loss * (gamma ** k)
                     
-                    # Scheduled Sampling: Probabilistic state pushforward
-                    if k < rollout_steps - 1:
-                        # Forward pass evaluates to: (ratio * target) + ((1 - ratio) * next)
-                        # Backward pass ignores the detached tensor, leaving d(current)/d(next) = 1.0
-                        # This preserves 100% of the gradient magnitude through the BPTT chain.
-                        current_state = next_state + (target_state - next_state).detach() * teacher_forcing_ratio
+                    # -------------------------------------------------------------
+                    # Strict Autoregression (Zero Gradient Bias)
+                    # -------------------------------------------------------------
+                    if k < active_rollout_steps - 1:
+                        # Feed the exact, unmodified neural prediction to the next step.
+                        # No detached tensors, no estimators, no ground truth injection.
+                        current_state = next_state 
                 
                 loss = loss / accumulation_steps
                 
