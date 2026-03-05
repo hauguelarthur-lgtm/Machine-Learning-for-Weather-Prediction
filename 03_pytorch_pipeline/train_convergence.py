@@ -107,7 +107,7 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                         # This preserves 100% of the gradient magnitude through the BPTT chain.
                         current_state = next_state + (target_state - next_state).detach() * teacher_forcing_ratio
                 
-                loss = loss / (accumulation_steps * gamma_sum)
+                loss = loss / accumulation_steps
                 
             loss.backward()
             
@@ -133,15 +133,24 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                 y_val = y_val.to(device, non_blocking=True)
                 batch_size = x_val.size(0)
                 
-                # Evaluate strictly on the t+1 baseline to monitor uncompounded error
-                y_val_step_1 = y_val[:, 0]
+                # Execute full autoregressive rollout without teacher forcing
+                current_state = x_val
+                rollout_mse = torch.zeros(102, device=device)
                 
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    val_preds = model(x_val)
+                for k in range(rollout_steps):
+                    target_state = y_val[:, k]
                     
-                batch_mse = evaluator.compute_mse(val_preds.float(), y_val_step_1.float()) 
-                global_mse_accum += batch_mse * batch_size
-                total_val_samples += batch_size
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        # Predict next state and feed back as next input
+                        current_state = model(current_state)
+                        
+                    # Accumulate error across the entire temporal horizon
+                    rollout_mse += evaluator.compute_mse(current_state.float(), target_state.float())
+                
+                # Mean error across the rollout duration
+                avg_rollout_mse = rollout_mse / rollout_steps
+                global_mse_accum += avg_rollout_mse * batch_size
+                total_val_samples += batch_size 
                 
         true_global_mse = global_mse_accum / total_val_samples
         true_global_rmse = torch.sqrt(true_global_mse)
