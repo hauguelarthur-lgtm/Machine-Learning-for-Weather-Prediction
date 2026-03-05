@@ -7,7 +7,7 @@ import os
 import xarray as xr
 
 # Import your custom pipeline modules
-from dataset import MeteorologicalDataset_hyper
+from dataset import MeteorologicalDataset
 from architecture import ResUNet
 from loss_functions import LatitudeWeightedMSELoss
 
@@ -112,7 +112,7 @@ def get_objective(train_subset, val_subset):
                         val_surf_loss = criterion(val_surf_pred.float(), val_surf_targ.float())
                         
                         batch_loss = val_base_loss + (15.0 * val_surf_loss)
-                        
+
                     total_val_loss += batch_loss.item() * current_batch_size
                     total_samples += current_batch_size
                 
@@ -127,21 +127,22 @@ def get_objective(train_subset, val_subset):
 if __name__ == "__main__":
     print("Initializing Bayesian Hyperparameter Optimization...")
 
-    full_dataset = MeteorologicalDataset_hyper(tensor_dir="/workspace/data/processed/tensors/", horizon=1)
+    # 2. Instantiate the unified dataset with a 1-step sequence
+    full_dataset = MeteorologicalDataset(tensor_dir="/workspace/data/processed/tensors/", rollout_steps=1)
     
-    # Define exact temporal boundaries to prevent chronological leakage (See Fix #3)
+    # Define exact temporal boundaries to prevent chronological leakage
     train_end_idx = 35064
     val_end_idx = train_end_idx + (2 * 1460)
     
-    train_subset = Subset(full_dataset, range(0, train_end_idx - full_dataset.horizon))
-    val_subset = Subset(full_dataset, range(train_end_idx, val_end_idx - full_dataset.horizon))
+    # 3. Update the horizon parameter to rollout_steps
+    train_subset = Subset(full_dataset, range(0, train_end_idx - full_dataset.rollout_steps))
+    val_subset = Subset(full_dataset, range(train_end_idx, val_end_idx - full_dataset.rollout_steps))
     
     study = optuna.create_study(
         direction="minimize", 
         pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5)
     )
     
-    # Pass the closure to the study
     study.optimize(get_objective(train_subset, val_subset), n_trials=20)
     
     print("\nOptimization Complete.")

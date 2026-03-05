@@ -64,10 +64,6 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
     
     best_val_rmse = float('inf')
 
-    # Strictly isolated index array for the targeted surface variables. 
-    # Assumes MSLP, T2M, U10, V10 correlate to indices [0, 1, 2, 3].
-    # You must verify this aligns with your channel_ordering.json.
-    surface_indices = torch.tensor([3,4,5,6], device=device)
     gamma = 0.9
     gamma_sum = sum([gamma ** k for k in range(rollout_steps)])
     for epoch in range(1, EPOCHS + 1):
@@ -85,7 +81,8 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 loss = 0.0
                 current_state = x
-                
+                current_state.requires_grad_()  
+                              
                 for k in range(rollout_steps):
                     target_state = y[:, k]
                     
@@ -104,10 +101,8 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=100):
                     
                     # Scheduled Sampling: Probabilistic state pushforward
                     if k < rollout_steps - 1:
-                        if torch.rand(1).item() < teacher_forcing_ratio:
-                            current_state = target_state # Anchor to true physical manifold
-                        else:
-                            current_state = next_state # Enforce exposure bias correction
+                        current_state = (teacher_forcing_ratio * target_state) + \
+                                        ((1.0 - teacher_forcing_ratio) * next_state)
                 
                 loss = loss / (accumulation_steps * gamma_sum)
                 
