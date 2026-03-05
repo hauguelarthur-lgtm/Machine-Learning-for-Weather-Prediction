@@ -48,7 +48,7 @@ class MeteorologicalDataset(Dataset):
         return torch.from_numpy(x_array), torch.stack(y_sequence, dim=0)
 
 
-class MeteorologicalDataset(Dataset):
+class MeteorologicalDataset_hyper(Dataset):
     def __init__(self, tensor_dir="./data/processed/tensors/", horizon=1):
         self.horizon = horizon
         self.tensor_files = sorted(glob.glob(os.path.join(tensor_dir, "france_tensor_*.npy")))
@@ -98,3 +98,9 @@ class MeteorologicalDataset(Dataset):
         
         return torch.from_numpy(x_array), torch.from_numpy(y_array)
 
+if __name__ == "__main__":
+    dataset = MeteorologicalDataset(rollout_steps=3)
+    print(f"Total valid training pairs: {len(dataset)}")
+    x, y = dataset[7307] 
+    print(f"X shape: {x.shape}")
+    print(f"Y Sequence shape: {y.shape}")
