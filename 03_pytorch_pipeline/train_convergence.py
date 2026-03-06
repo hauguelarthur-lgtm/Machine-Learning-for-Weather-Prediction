@@ -75,15 +75,15 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=300):
     
     if os.path.exists(latest_checkpoint_path):
         print(f"Detected interrupted execution. Restoring continuous state from: {latest_checkpoint_path}")
-        checkpoint = torch.load(latest_checkpoint_path, map_location=device)
+        save_state = torch.load(latest_checkpoint_path, map_location=device)
         
         # Overwrite initialized tensors with the serialized mathematical state
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        model.load_state_dict(save_state['model_state_dict'])
+        optimizer.load_state_dict(save_state['optimizer_state_dict'])
+        scheduler.load_state_dict(save_state['scheduler_state_dict'])
         
         # Shift the temporal integration bound
-        start_epoch = checkpoint['epoch'] + 1
+        start_epoch = save_state['epoch'] + 1
         
         # Recover the minimum physical error baseline
         optimal_checkpoint_path = "./models/checkpoints/resunet_optimal.pth"
