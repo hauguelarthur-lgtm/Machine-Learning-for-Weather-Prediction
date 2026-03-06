@@ -70,8 +70,30 @@ def execute_training_pipeline(OPTIMAL_LR, OPTIMAL_WD, BATCH_SIZE, EPOCHS=300):
         optimizer, T_0=phase_length, T_mult=1, eta_min=1e-6
     )
 
+    start_epoch = 1
+    latest_checkpoint_path = "./models/checkpoints/resunet_latest.pth"
+    
+    if os.path.exists(latest_checkpoint_path):
+        print(f"Detected interrupted execution. Restoring continuous state from: {latest_checkpoint_path}")
+        checkpoint = torch.load(latest_checkpoint_path, map_location=device)
+        
+        # Overwrite initialized tensors with the serialized mathematical state
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Shift the temporal integration bound
+        start_epoch = checkpoint['epoch'] + 1
+        
+        # Recover the minimum physical error baseline
+        optimal_checkpoint_path = "./models/checkpoints/resunet_optimal.pth"
+        if os.path.exists(optimal_checkpoint_path):
+            opt_checkpoint = torch.load(optimal_checkpoint_path, map_location=device)
+            best_val_rmse = opt_checkpoint['val_surface_rmse']
+            
+        print(f"Momentum and Parametric topologies restored. Resuming at Epoch {start_epoch}.")
 
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(start_epoch, EPOCHS + 1):
         model.train()
         train_loss_accum = 0.0
         optimizer.zero_grad(set_to_none=True)
