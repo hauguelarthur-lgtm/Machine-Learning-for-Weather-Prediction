@@ -13,7 +13,7 @@ def process_features():
     if not os.path.exists(raw_dir):
         raise FileNotFoundError(f"CRITICAL: The directory '{raw_dir}' does not exist in the current working directory: {os.getcwd()}")
     
-    for year in range(1996, 2026):
+    for year in range(1990, 1996):
         print(f"\nEvaluating year: {year}...")
         
         surf_pattern = f"{raw_dir}/surface_{year}_*.nc"
