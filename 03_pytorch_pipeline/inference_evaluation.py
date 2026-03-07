@@ -29,7 +29,11 @@ def get_climatology_slice(climatology_ds, target_time):
     return c_tensor
 
 def execute_wb2_evaluation():
-    # STRICT CORRECTION 1: Hardware initialization preceding graph topology
+    # OPTIMIZATION 3: Algorithmic Heuristic Benchmarking
+    # Forces the NVIDIA driver to select the absolute fastest convolution algorithms
+    # for the rigid (1, 102, 64, 64) spatial manifold.
+    torch.backends.cudnn.benchmark = True
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing strict WB2 Autoregressive Evaluation on {device}...")
 
@@ -37,10 +41,14 @@ def execute_wb2_evaluation():
     model = ResUNet(in_channels=102, out_channels=102, base_filters=128)
     model = model.to(device)    
 
-    # Load the pre-computed parameter matrices from the NVMe storage
     checkpoint = torch.load("./models/checkpoints/resunet_latest.pth", map_location=device, weights_only=True)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
+
+    # OPTIMIZATION 2: Static Graph Compilation (Kernel Fusion)
+    # Minimizes CUDA kernel launch overhead and GPU memory bandwidth pressure
+    print("Compiling network topology via TorchDynamo...")
+    model = torch.compile(model, mode="reduce-overhead")
 
     lats = extract_latitudes()
     lat_rad = np.deg2rad(np.array(lats, dtype=np.float32))
@@ -71,11 +79,10 @@ def execute_wb2_evaluation():
     lead_times = 28 # Evaluates exactly 7 continuous days (28 * 6 hours)
     time_step = timedelta(hours=6)
     
-    # AMELIORATION 1: Direct pre-allocation of spatial baseline to VRAM/RAM
     print("Pre-allocating Climatological Baseline into memory...")
     climatology_ds = xr.open_dataset("./data/processed/evaluation/wb2_climatology_baseline.nc").load()
     
-    # STRICT CORRECTION 2: Memory isolation and coordinate mapping
+    # Memory isolation and coordinate mapping
     eval_vars = ['z_500', 't_850', 't2m', 'u10', 'v10']
     eval_indices = [channel_names.index(var) for var in eval_vars]
     num_eval_vars = len(eval_vars)
@@ -85,39 +92,51 @@ def execute_wb2_evaluation():
     acc_var_P = torch.zeros((lead_times, num_eval_vars), device=device)
     acc_var_T = torch.zeros((lead_times, num_eval_vars), device=device)
     
-    total_sequences = 0
     full_dataset = MeteorologicalDataset(tensor_dir="./data/processed/tensors/", rollout_steps=lead_times)
     
+    # OPTIMIZATION 1: Asynchronous Memory Pinning and DMA Transfer
+    # Map the exact 120-step deterministic sequence into a strict subset
+    eval_indices_list = list(range(35064, len(full_dataset) - lead_times, 120))
+    eval_subset = Subset(full_dataset, eval_indices_list)
+    
+    eval_loader = DataLoader(
+        eval_subset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True # Locks memory pages for non-blocking PCI-e transfer
+    )
+    
+    total_sequences = 0
     print("Executing Autoregressive Pushforward Trajectory...")
+    
     with torch.no_grad():
-        for start_idx in range(35064, len(full_dataset) - lead_times, 120):  
-            P_input, T_targets = full_dataset[start_idx]
+        for batch_idx, (P_input, T_targets) in enumerate(eval_loader):
+            # Asynchronous DMA projection to GPU hardware
+            current_state = P_input.to(device, non_blocking=True)
+            T_targets = T_targets.to(device, non_blocking=True)
             
-            current_state = P_input.unsqueeze(0).to(device) 
-            T_targets = T_targets.unsqueeze(0).to(device)
+            # Map the dataloader batch back to the absolute temporal origin
+            actual_start_idx = eval_indices_list[batch_idx]
+            current_time = datetime(2020, 1, 1, 0, 0, 0) + (actual_start_idx - 35064) * time_step
             
-            current_time = datetime(2020, 1, 1, 0, 0, 0) + (start_idx - 35064) * time_step
-            
-            # AMELIORATION 2: SSH Telemetry tracker
-            print(f"  -> BPTT Rollout executing on index {start_idx} | Base Date: {current_time}")
+            print(f"  -> BPTT Rollout executing on index {actual_start_idx} | Base Date: {current_time}")
             
             for k in range(lead_times):
                 target_time = current_time + ((k + 1) * time_step)
                 
-                # Evaluates exclusively on Vast.ai Ampere/Hopper hardware
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     current_state = model(current_state)
                 
+                # Executed outside autocast context to maintain strict FP32 metric integrity
                 P_pred_phys = (current_state.float() * sigma) + mu
                 T_target_phys = (T_targets[:, k].float() * sigma) + mu
                 
-                # STRICT CORRECTION 2b: Slice 102-channel matrix to 5-channel evaluation matrix
                 P_pred_eval = P_pred_phys[:, eval_indices, :, :]
                 T_target_eval = T_target_phys[:, eval_indices, :, :]
                 
                 C_baseline = get_climatology_slice(climatology_ds, target_time).unsqueeze(0).to(device)
                 
-                # Physically aligned 5-dimension reduction
                 P_prime = P_pred_eval - C_baseline
                 T_prime = T_target_eval - C_baseline
                 
@@ -127,12 +146,10 @@ def execute_wb2_evaluation():
                 
             total_sequences += 1
 
-    # Derive the exact Anomaly Correlation Coefficient
     final_acc = acc_cov / torch.sqrt(acc_var_P * acc_var_T)
     final_acc = final_acc.cpu().numpy()
     
     print("\nStrict WB2 Autoregressive Skill Decay (ACC):")
-    # Coordinates map exactly to isolated evaluation matrix
     z500_idx = eval_vars.index("z_500")
     t850_idx = eval_vars.index("t_850")
     t2m_idx  = eval_vars.index("t2m")
