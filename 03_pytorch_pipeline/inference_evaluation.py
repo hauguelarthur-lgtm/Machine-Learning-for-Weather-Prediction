@@ -120,14 +120,19 @@ def execute_wb2_evaluation():
         channel_names = json.load(f)
         
     print("\nStrict WB2 Autoregressive Skill Decay (ACC):")
-    # Identify exact matrix index for evaluation variables
-    z500_idx = channel_names.index("Z_500") if "Z_500" in channel_names else 3
-    t850_idx = channel_names.index("T_850") if "T_850" in channel_names else 0
+    # Strictly map to the exact JSON strings validated by your terminal output
+    z500_idx = channel_names.index("z_500")
+    t850_idx = channel_names.index("t_850")
+    t2m_idx  = channel_names.index("t2m")
     
-    print("Lead Time | Z500 ACC | T850 ACC")
+    print("Lead Time | Z500 ACC | T850 ACC | T2M ACC")
+    print("-" * 45)
     for k in range(lead_times):
         hours_ahead = (k + 1) * 6
-        print(f" +{hours_ahead:03d}h    |  {final_acc[k, z500_idx]:.4f}  |  {final_acc[k, t850_idx]:.4f}")
+        z_acc = final_acc[k, z500_idx]
+        t_acc = final_acc[k, t850_idx]
+        t2m_acc = final_acc[k, t2m_idx]
+        print(f" +{hours_ahead:03d}h    |  {z_acc:.4f}  |  {t_acc:.4f}  |  {t2m_acc:.4f}")
 
 if __name__ == "__main__":
     execute_wb2_evaluation()
