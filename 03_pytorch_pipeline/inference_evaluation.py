@@ -125,8 +125,12 @@ def execute_wb2_evaluation():
             for k in range(lead_times):
                 target_time = current_time + ((k + 1) * time_step)
                 
+                # Signal to the Torch compiler that a new independent graph step is beginning
+                torch.compiler.cudagraph_mark_step_begin()
+                
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    current_state = model(current_state)
+                    # STRICT CORRECTION: Clone the tensor to break the static memory pointer
+                    current_state = model(current_state).clone()
                 
                 # Executed outside autocast context to maintain strict FP32 metric integrity
                 P_pred_phys = (current_state.float() * sigma) + mu
