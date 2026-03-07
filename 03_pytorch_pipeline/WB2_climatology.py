@@ -57,17 +57,20 @@ def compute_wb2_baseline():
     final_climatology = smoothed_climatology.isel(dayofyear=slice(pad_width, -pad_width))
     
     print("Formatting spatial baseline for O(1) inference evaluation lookup...")
-    # 2. Collapse the 2D temporal axes into the 1D string array required by inference_evaluation.py
-    final_climatology = final_climatology.stack(doy_hour_dim=['dayofyear', 'hour'])
+    # 1. Collapse the 2D temporal axes into a temporary MultiIndex
+    final_climatology = final_climatology.stack(temp_dim=['dayofyear', 'hour'])
     
-    # strictly enforce "DDD_HH" format (e.g., "001_06", "365_18")
-    doy_hour_strings = [f"{int(d):03d}_{int(h):02d}" for d, h in final_climatology['doy_hour_dim'].values]
+    # 2. Generate the strict "DDD_HH" string list
+    doy_hour_strings = [f"{int(d):03d}_{int(h):02d}" for d, h in final_climatology['temp_dim'].values]
     
-    final_climatology['doy_hour_dim'] = doy_hour_strings
-    final_climatology = final_climatology.rename({'doy_hour_dim': 'doy_hour'})
+    # 3. Assign the strings as a new independent coordinate along the temporary dimension
+    final_climatology = final_climatology.assign_coords(doy_hour=("temp_dim", doy_hour_strings))
     
-    # Clean redundant multi-index scalar bounds to prevent NetCDF4 serialization failures
-    final_climatology = final_climatology.drop_vars(['dayofyear', 'hour'], errors='ignore')
+    # 4. Swap the topological dimension pointer to the new string coordinate
+    final_climatology = final_climatology.swap_dims({"temp_dim": "doy_hour"})
+    
+    # 5. Erase the legacy MultiIndex and its sub-components to allow NetCDF4 serialization
+    final_climatology = final_climatology.drop_vars(['temp_dim', 'dayofyear', 'hour'], errors='ignore')
     
     output_path = os.path.join(output_dir, "wb2_climatology_baseline.nc")
     print(f"Serializing mathematical baseline to {output_path}...")
