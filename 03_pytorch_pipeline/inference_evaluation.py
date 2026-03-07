@@ -30,6 +30,22 @@ def get_climatology_slice(climatology_ds, target_time):
     return c_tensor
 
 def execute_wb2_evaluation():
+
+    # 1. Instantiate the topological graph in active memory
+    model = ResUNet(in_channels=102, out_channels=102, base_filters=128)
+
+    # 2. Project the uninitialized graph onto the target hardware (CPU or GPU)
+    model = model.to(device)    
+
+    # 3. Load the pre-computed parameter matrices from the NVMe storage
+    checkpoint = torch.load("./models/checkpoints/resunet_latest.pth", map_location=device, weights_only=True)
+
+    # 4. Inject the strict mapping weights into the graph's convolutional layers
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    # 5. Lock the computational graph into a deterministic state
+    model.eval()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Initializing strict WB2 Autoregressive Evaluation...")
 
