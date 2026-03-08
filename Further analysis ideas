@@ -1,0 +1,2 @@
+Jax implementation 
+Better the loss definition and defining it outside of the train files.
