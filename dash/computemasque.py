@@ -7,8 +7,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 shapefile_path = os.path.abspath(os.path.join(current_dir, '..', 'data', 'shapefiles', 'departement.shp'))
 out_dir = os.path.abspath(os.path.join(current_dir, '..', 'data', 'processed', 'tensors'))
 
-# Ensure bounding box matches your ERA5 physical spatial domain strictly
-H, W = 64, 64 # Replace with actual spatial dimensions (H, W) from P_initial
+H, W = 64, 64
 lat_array = np.linspace(54.50, 38.75, H)
 lon_array = np.linspace(-6.25, 9.50, W)
 
