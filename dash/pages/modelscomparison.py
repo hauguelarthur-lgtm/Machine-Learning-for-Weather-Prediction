@@ -3,6 +3,7 @@ import os
 import json
 import torch
 import dash
+import numpy as np
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
 from functools import lru_cache
@@ -52,6 +53,51 @@ for name, filename in [("optimal", "resunet_optimal.pth"), ("latest", "resunet_l
         with torch.no_grad():
             compiled_models[name] = torch.jit.trace(m, P_initial)
 
+MAX_LEAD_TIME = 168
+MAX_STEPS = MAX_LEAD_TIME // 6
+
+# Dictionary to hold the pre-calculated 2D spatial manifolds
+# Structure: cache[model_name][step] = masked_z500_numpy_array
+precomputed_cache = {"optimal": {}, "latest": {}}
+
+for model_name, path in [("optimal", "./data/models/checkpoints/resunet_optimal.pth"), 
+                         ("latest", "./data/models/checkpoints/resunet_latest.pth")]:
+    if os.path.exists(path):
+        # 1. Load model
+        m = ResUNet(in_channels=len(channel_names), out_channels=len(channel_names), base_filters=128).to(device)
+        checkpoint = torch.load(path, map_location=device, weights_only=True)
+        m.load_state_dict(checkpoint['model_state_dict'])
+        m.eval()
+        
+        # 2. Compile model for faster initialization looping
+        with torch.no_grad():
+            compiled_model = torch.jit.trace(m, P_initial)
+            
+            current_state = P_initial
+            
+            # Store t=0
+            P_phys_0 = (current_state.float() * sigma) + mu
+            z500_field_0 = P_phys_0[0, z500_idx, :, :].cpu().numpy()
+            precomputed_cache[model_name][0] = np.where(mask_matrix, z500_field_0, np.nan)
+            
+            # 3. Execute the full deterministic sequence
+            for step in range(1, MAX_STEPS + 1):
+                current_state = compiled_model(current_state)
+                
+                # Pre-calculate Denormalization
+                P_phys = (current_state.float() * sigma) + mu
+                
+                # Extract Manifold
+                z500_field = P_phys[0, z500_idx, :, :].cpu().numpy()
+                
+                # Pre-calculate Masking
+                masked_field = np.where(mask_matrix, z500_field, np.nan)
+                
+                # Cache the terminal 2D physical array
+                precomputed_cache[model_name][step] = masked_field
+
+print("Cache Initialization Complete. Starting Dash Server...")
+
 # Bi-variate recursive memoization (Hash signature includes model invariant)
 @lru_cache(maxsize=128)
 def get_comparison_state(model_name: str, step: int):
@@ -93,10 +139,19 @@ layout = html.Div(style={'fontFamily': 'monospace', 'backgroundColor': '#111111'
      Input('lead-time-slider', 'value')]
 )
 def compute_pushforward_mapping(selected_matrix, lead_time):
-    if selected_matrix not in compiled_models:
-        return go.Figure().update_layout(title="Error: Model checkpoint not compiled.", template="plotly_dark")
+    if selected_matrix not in precomputed_cache:
+        return go.Figure().update_layout(title="Error: Model checkpoint not loaded.", template="plotly_dark")
     
     steps = lead_time // 6
+    
+    # O(1) Memory Retrieval. PyTorch inference is bypassed entirely.
+    z500_field_masked = precomputed_cache[selected_matrix][steps]
+    
+    contour_trace = go.Contour(
+        z=z500_field_masked, x=lon_array, y=lat_array,
+        colorscale='RdBu_r', contours=dict(showlines=False),
+        colorbar=dict(title='Geopotential (m²/s²)')
+    )
     current_state = get_comparison_state(selected_matrix, steps)
     
     P_phys = (current_state.float() * sigma) + mu
