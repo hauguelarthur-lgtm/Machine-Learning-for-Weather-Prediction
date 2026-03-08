@@ -2,15 +2,13 @@ import sys
 import os
 import json
 import torch
-import numpy as np
 import dash
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
-import geopandas as gpd
+from functools import lru_cache
 
 dash.register_page(__name__, path="/modelscomparison", name="Models Comparison")
 
-# 1. Path Topology
 current_dir = os.path.dirname(os.path.abspath(__file__))
 pipeline_path = os.path.abspath(os.path.join(current_dir, '..', '..', 'pytorch_pipeline'))
 if pipeline_path not in sys.path:
@@ -19,28 +17,29 @@ if pipeline_path not in sys.path:
 from architecture import ResUNet
 from dataset import MeteorologicalDataset
 
-# 2. Hardware Allocation Matrix
 device = torch.device("cpu")
 
-# 3. Global State Initialization
-stats_path = os.path.join(current_dir, '..', '..', 'data', 'processed', 'global_stats.json')
-channels_path = os.path.join(current_dir, '..', '..', 'data', 'processed', 'tensors', 'channel_ordering.json')
-
-with open(stats_path, "r") as f:
+data_dir = os.path.abspath(os.path.join(current_dir, '..', '..', 'data'))
+with open(os.path.join(data_dir, 'processed', 'global_stats.json'), "r") as f:
     stats = json.load(f)
-with open(channels_path, "r") as f:
+with open(os.path.join(data_dir, 'processed', 'tensors', 'channel_ordering.json'), "r") as f:
     channel_names = json.load(f)
 
 z500_idx = channel_names.index("z_500")
-
 mu_list = [stats["mean"].get(var, 0.0) for var in channel_names]
 sigma_list = [stats["std"].get(var, 1.0) for var in channel_names]
 
 mu = torch.tensor(mu_list, device=device).view(1, len(channel_names), 1, 1)
 sigma = torch.tensor(sigma_list, device=device).view(1, len(channel_names), 1, 1)
 
-models = {}
-model_dir = os.path.join(current_dir, '..', '..', 'data', 'models', 'checkpoints')
+tensor_dir = os.path.join(data_dir, 'processed', 'tensors')
+eval_dataset = MeteorologicalDataset(tensor_dir=tensor_dir, rollout_steps=1)
+P_initial, _ = eval_dataset[35064]
+P_initial = P_initial.unsqueeze(0).to(device)
+
+model_dir = os.path.join(data_dir, 'models', 'checkpoints')
+compiled_models = {}
+
 for name, filename in [("optimal", "resunet_optimal.pth"), ("latest", "resunet_latest.pth")]:
     path = os.path.join(model_dir, filename)
     if os.path.exists(path):
@@ -48,44 +47,22 @@ for name, filename in [("optimal", "resunet_optimal.pth"), ("latest", "resunet_l
         checkpoint = torch.load(path, map_location=device, weights_only=True)
         m.load_state_dict(checkpoint['model_state_dict'])
         m.eval()
-        models[name] = m
+        
+        # JIT Compilation mapping
+        with torch.no_grad():
+            compiled_models[name] = torch.jit.trace(m, P_initial)
 
-tensor_dir = os.path.join(current_dir, '..', '..', 'data', 'processed', 'tensors')
-eval_dataset = MeteorologicalDataset(tensor_dir=tensor_dir, rollout_steps=1)
-P_initial, _ = eval_dataset[35064]
-P_initial = P_initial.unsqueeze(0).to(device)
+# Bi-variate recursive memoization (Hash signature includes model invariant)
+@lru_cache(maxsize=128)
+def get_comparison_state(model_name: str, step: int):
+    if step == 0:
+        return P_initial
+    prev_state = get_comparison_state(model_name, step - 1)
+    with torch.no_grad():
+        return compiled_models[model_name](prev_state)
 
-# 4. Spatial Grid & Geographic Matrix Computation
-print("[modelscomparison] Computing Geographic Characteristic Matrix...")
-H, W = P_initial.shape[-2:]
-lat_array = np.linspace(52.0, 41.0, H)
-lon_array = np.linspace(-6.0, 10.0, W)
-
-shapefile_path = os.path.join(current_dir, '..', '..', 'data', 'shapefiles', 'departement.shp')
-gdf = gpd.read_file(shapefile_path).to_crs(epsg=4326)
-
-shp_lons, shp_lats = [], []
-for geom in gdf.geometry:
-    if geom is None: continue
-    if geom.type == 'Polygon':
-        x, y = geom.exterior.coords.xy
-        shp_lons.extend(x.tolist() + [None])
-        shp_lats.extend(y.tolist() + [None])
-    elif geom.type == 'MultiPolygon':
-        for poly in geom.geoms:
-            x, y = poly.exterior.coords.xy
-            shp_lons.extend(x.tolist() + [None])
-            shp_lats.extend(y.tolist() + [None])
-
-france_boundary = gdf.geometry.unary_union
-Lons, Lats = np.meshgrid(lon_array, lat_array)
-points_geoseries = gpd.GeoSeries(gpd.points_from_xy(Lons.flatten(), Lats.flatten()))
-mask_1d = points_geoseries.within(france_boundary)
-mask_matrix = mask_1d.values.reshape(Lons.shape)
-
-# 5. Declarative DOM Layout
 layout = html.Div(style={'fontFamily': 'monospace', 'backgroundColor': '#111111', 'color': '#ffffff', 'padding': '20px'}, children=[
-    html.H1("ResUNet Autoregressive Surrogate: Synoptic Advection Boundary"),
+    html.H1("ResUNet Autoregressive Surrogate: Multi-Phase Matrix Evaluation"),
     html.Div("Target Variable: Z500 (Geopotential at 500 hPa)"),
     html.Div([
         html.Label("Parameter Matrix:"),
@@ -110,44 +87,28 @@ layout = html.Div(style={'fontFamily': 'monospace', 'backgroundColor': '#111111'
     dcc.Graph(id='spatial-forecast-plot', style={'height': '700px', 'marginTop': '30px'})
 ])
 
-# 6. Inference Execution Graph
 @dash.callback(
     Output('spatial-forecast-plot', 'figure'),
     [Input('matrix-selector', 'value'),
      Input('lead-time-slider', 'value')]
 )
 def compute_pushforward_mapping(selected_matrix, lead_time):
-    if selected_matrix not in models:
-        return go.Figure().update_layout(title="Error: Model checkpoint not found.", template="plotly_dark")
+    if selected_matrix not in compiled_models:
+        return go.Figure().update_layout(title="Error: Model checkpoint not compiled.", template="plotly_dark")
     
-    model = models[selected_matrix]
-    current_state = P_initial
     steps = lead_time // 6
+    current_state = get_comparison_state(selected_matrix, steps)
     
-    with torch.no_grad():
-        for _ in range(steps):
-            current_state = model(current_state)
-        P_phys = (current_state.float() * sigma) + mu
-        
+    P_phys = (current_state.float() * sigma) + mu
     z500_field = P_phys[0, z500_idx, :, :].cpu().numpy()
-    spatial_field_masked = np.where(mask_matrix, z500_field, np.nan)
     
-    contour_trace = go.Contour(
-        z=spatial_field_masked, x=lon_array, y=lat_array,
-        colorscale='RdBu_r', contours=dict(showlines=False),
-        colorbar=dict(title='Geopotential (m²/s²)')
-    )
+    fig = go.Figure(data=go.Contour(
+        z=z500_field, colorscale='RdBu_r', contours=dict(showlines=False), colorbar=dict(title='Geopotential (m²/s²)')
+    ))
     
-    boundary_trace = go.Scatter(
-        x=shp_lons, y=shp_lats, mode='lines',
-        line=dict(color='white', width=0.8), hoverinfo='skip', showlegend=False
-    )
-    
-    fig = go.Figure(data=[contour_trace, boundary_trace])
     fig.update_layout(
-        title=f"Z500 Projection | Checkpoint: {selected_matrix}.pth | Horizon: +{lead_time}h",
+        title=f"Z500 Extrapolation | Checkpoint: {selected_matrix}.pth | Horizon: +{lead_time}h",
         xaxis_title="Longitude Coordinate Index", yaxis_title="Latitude Coordinate Index",
-        xaxis=dict(scaleanchor="y", scaleratio=1), yaxis=dict(constrain="domain"),
         template="plotly_dark", plot_bgcolor='#111111', paper_bgcolor='#111111'
     )
     return fig
